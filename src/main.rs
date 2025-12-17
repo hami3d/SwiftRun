@@ -14,8 +14,8 @@ use windows::{
             D2D_RECT_F, D2D_SIZE_U,
         },
         D2D1CreateFactory, ID2D1Factory, ID2D1HwndRenderTarget, ID2D1RenderTarget,
-        ID2D1SolidColorBrush, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_DEBUG_LEVEL_NONE,
-        D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_FACTORY_OPTIONS, D2D1_FACTORY_TYPE_SINGLE_THREADED,
+        ID2D1SolidColorBrush, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_DRAW_TEXT_OPTIONS_NONE,
+        D2D1_FACTORY_OPTIONS, D2D1_FACTORY_TYPE_SINGLE_THREADED,
         D2D1_HWND_RENDER_TARGET_PROPERTIES, D2D1_PRESENT_OPTIONS_NONE,
         D2D1_RENDER_TARGET_PROPERTIES, D2D1_ROUNDED_RECT,
     },
@@ -44,6 +44,41 @@ static mut H_DROPDOWN: HWND = HWND(0);
 static mut DROPDOWN_RENDER_TARGET: Option<ID2D1HwndRenderTarget> = None;
 static mut HOVER_DROPDOWN: Option<usize> = None;
 
+// Static strings caching
+static STR_TITLE: std::sync::OnceLock<Vec<u16>> = std::sync::OnceLock::new();
+static STR_RUN: std::sync::OnceLock<Vec<u16>> = std::sync::OnceLock::new();
+static STR_CANCEL: std::sync::OnceLock<Vec<u16>> = std::sync::OnceLock::new();
+static STR_PLACEHOLDER: std::sync::OnceLock<Vec<u16>> = std::sync::OnceLock::new();
+
+fn get_str_title() -> &'static [u16] {
+    STR_TITLE
+        .get_or_init(|| "Swift Run".encode_utf16().collect())
+        .as_slice()
+}
+fn get_str_run() -> &'static [u16] {
+    STR_RUN
+        .get_or_init(|| "Run \u{21B5}".encode_utf16().collect())
+        .as_slice()
+}
+fn get_str_cancel() -> &'static [u16] {
+    STR_CANCEL
+        .get_or_init(|| "Cancel".encode_utf16().collect())
+        .as_slice()
+}
+fn get_str_placeholder() -> &'static [u16] {
+    STR_PLACEHOLDER
+        .get_or_init(|| "Type the name of a command to run".encode_utf16().collect())
+        .as_slice()
+}
+
+fn is_input_empty() -> bool {
+    if let Ok(lock) = INPUT_BUFFER.lock() {
+        lock.trim().is_empty()
+    } else {
+        true
+    }
+}
+
 // Fixed window dimensions
 const WIN_W: f32 = 500.0;
 const WIN_H: f32 = 180.0;
@@ -57,7 +92,7 @@ const WIN_BTN_W: f32 = 46.0;
 
 // Element positions (fixed layout)
 const TITLE_Y: f32 = 8.0;
-const DESC_Y: f32 = 38.0;
+// const DESC_Y: f32 = 38.0; // Removed unused
 const INPUT_Y: f32 = 45.0;
 const INPUT_H: f32 = 32.0;
 const BTN_Y: f32 = 95.0;
@@ -100,7 +135,7 @@ struct Fonts {
 }
 
 #[repr(C)]
-struct ACCENT_POLICY {
+struct AccentPolicy {
     AccentState: u32,
     AccentFlags: u32,
     GradientColor: u32,
@@ -108,7 +143,7 @@ struct ACCENT_POLICY {
 }
 
 #[repr(C)]
-struct WINDOWCOMPOSITIONATTRIBDATA {
+struct WindowCompositionAttribData {
     Attrib: u32,
     pvData: *mut std::ffi::c_void,
     cbData: usize,
@@ -176,23 +211,23 @@ fn set_acrylic_effect(hwnd: HWND) {
         if let Some(func) = func_ptr {
             let set_window_composition_attribute: unsafe extern "system" fn(
                 HWND,
-                *mut WINDOWCOMPOSITIONATTRIBDATA,
+                *mut WindowCompositionAttribData,
             ) -> i32 = std::mem::transmute(func);
 
             let is_dark = is_dark_mode();
             let tint = if is_dark { 0xCC000000 } else { 0xCCF3F3F3 };
 
-            let mut policy = ACCENT_POLICY {
+            let mut policy = AccentPolicy {
                 AccentState: 4, // ACCENT_ENABLE_ACRYLICBLURBEHIND
                 AccentFlags: 0,
                 GradientColor: tint, // AABBGGRR
                 AnimationId: 0,
             };
 
-            let mut data = WINDOWCOMPOSITIONATTRIBDATA {
+            let mut data = WindowCompositionAttribData {
                 Attrib: 19, // WCA_ACCENT_POLICY
                 pvData: &mut policy as *mut _ as _,
-                cbData: std::mem::size_of::<ACCENT_POLICY>(),
+                cbData: std::mem::size_of::<AccentPolicy>(),
             };
 
             set_window_composition_attribute(hwnd, &mut data);
@@ -354,7 +389,7 @@ fn main() -> Result<()> {
             instance,
             None,
         );
-        unsafe { H_DROPDOWN = h_dropdown };
+        H_DROPDOWN = h_dropdown;
 
         // Mica + rounded corners
         let v: i32 = 1;
@@ -424,7 +459,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn hit_test(x: i32, y: i32, w: f32, _h: f32) -> HoverId {
+fn hit_test(x: i32, y: i32, w: f32, _h: f32, input_empty: bool) -> HoverId {
     let fx = x as f32;
     let fy = y as f32;
 
@@ -439,7 +474,11 @@ fn hit_test(x: i32, y: i32, w: f32, _h: f32) -> HoverId {
     // OK button
     let ok_x = w - MARGIN - BTN_W * 2.0 - 8.0;
     if fx >= ok_x && fx < ok_x + BTN_W && fy >= BTN_Y && fy < BTN_Y + BTN_H {
-        return HoverId::Ok;
+        return if input_empty {
+            HoverId::None
+        } else {
+            HoverId::Ok
+        };
     }
     // Cancel button
     let cancel_x = w - MARGIN - BTN_W;
@@ -601,7 +640,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 let sx = x as f32 / scale;
                 let sy = y as f32 / scale;
 
-                let new_hover = hit_test(sx as i32, sy as i32, w, h);
+                let new_hover = hit_test(sx as i32, sy as i32, w, h, is_input_empty());
                 if new_hover != HOVER {
                     HOVER = new_hover;
                     InvalidateRect(hwnd, None, BOOL(0));
@@ -622,7 +661,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 let sx = x as f32 / scale;
                 let sy = y as f32 / scale;
 
-                match hit_test(sx as i32, sy as i32, w, h) {
+                match hit_test(sx as i32, sy as i32, w, h, is_input_empty()) {
                     HoverId::Close => PostQuitMessage(0),
                     HoverId::Min => {
                         ShowWindow(hwnd, SW_MINIMIZE);
@@ -872,11 +911,9 @@ unsafe extern "system" fn dropdown_wndproc(
                     HOVER_DROPDOWN = Some(idx);
                     InvalidateRect(hwnd, None, BOOL(0));
                 }
-            } else {
-                if HOVER_DROPDOWN.is_some() {
-                    HOVER_DROPDOWN = None;
-                    InvalidateRect(hwnd, None, BOOL(0));
-                }
+            } else if HOVER_DROPDOWN.is_some() {
+                HOVER_DROPDOWN = None;
+                InvalidateRect(hwnd, None, BOOL(0));
             }
 
             // Track mouse leave
@@ -1104,7 +1141,7 @@ unsafe fn ensure_dropdown_resources(hwnd: HWND) {
 unsafe fn ensure_resources(hwnd: HWND) {
     if RENDER_TARGET.is_none() {
         let Some(factory) = &D2D_FACTORY else { return };
-        let Some(dwrite) = &DWRITE_FACTORY else {
+        let Some(_dwrite) = &DWRITE_FACTORY else {
             return;
         };
 
@@ -1321,7 +1358,7 @@ unsafe fn paint() {
 
     let size = target.GetSize();
     let w = size.width;
-    let h = size.height;
+    let _h = size.height;
 
     // Window buttons
     // Minimize
@@ -1394,9 +1431,8 @@ unsafe fn paint() {
     );
 
     // Title
-    let title_text: Vec<u16> = "Swift Run".encode_utf16().collect();
     rt.DrawText(
-        &title_text,
+        get_str_title(),
         &f.title,
         &D2D_RECT_F {
             left: MARGIN,
@@ -1435,7 +1471,7 @@ unsafe fn paint() {
         };
 
         let text_str: Vec<u16> = if buf.is_empty() {
-            "Type the name of a command to run".encode_utf16().collect()
+            get_str_placeholder().to_vec()
         } else {
             buf.encode_utf16().collect()
         };
@@ -1562,11 +1598,20 @@ unsafe fn paint() {
 
     // OK button
     let ok_x = w - MARGIN - BTN_W * 2.0 - 8.0;
-    draw_button(&rt, b, f, ok_x, "Run \u{21B5}", HoverId::Ok);
+    let input_empty = is_input_empty();
+    draw_button(&rt, b, f, ok_x, get_str_run(), HoverId::Ok, input_empty);
 
     // Cancel button
     let cancel_x = w - MARGIN - BTN_W;
-    draw_button(&rt, b, f, cancel_x, "Cancel", HoverId::Cancel);
+    draw_button(
+        &rt,
+        b,
+        f,
+        cancel_x,
+        get_str_cancel(),
+        HoverId::Cancel,
+        false,
+    );
 
     // Dropdown List drawing moved to dropdown_wndproc
 
@@ -1578,8 +1623,9 @@ unsafe fn draw_button(
     b: &Brushes,
     f: &Fonts,
     x: f32,
-    text: &str,
+    text: &[u16],
     id: HoverId,
+    disabled: bool,
 ) {
     let rect = D2D_RECT_F {
         left: x,
@@ -1593,15 +1639,22 @@ unsafe fn draw_button(
         radiusY: CORNER_RADIUS,
     };
 
-    let bg = if HOVER == id { &b.btn_hover } else { &b.btn_bg };
+    let bg = if disabled {
+        &b.input_bg
+    } else if HOVER == id {
+        &b.btn_hover
+    } else {
+        &b.btn_bg
+    };
     rt.FillRoundedRectangle(&rounded, bg);
 
-    let txt: Vec<u16> = text.encode_utf16().collect();
+    let brush = if disabled { &b.gray } else { &b.white };
+
     rt.DrawText(
-        &txt,
+        text,
         &f.button,
         &rect,
-        &b.white,
+        brush,
         D2D1_DRAW_TEXT_OPTIONS_NONE,
         DWRITE_MEASURING_MODE_NATURAL,
     );
