@@ -13,16 +13,18 @@ use windows::{
             D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_POINT_2F,
             D2D_RECT_F, D2D_SIZE_U,
         },
-        D2D1CreateFactory, ID2D1Factory, ID2D1HwndRenderTarget, ID2D1RenderTarget,
-        ID2D1SolidColorBrush, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_DRAW_TEXT_OPTIONS_NONE,
-        D2D1_FACTORY_OPTIONS, D2D1_FACTORY_TYPE_SINGLE_THREADED,
-        D2D1_HWND_RENDER_TARGET_PROPERTIES, D2D1_PRESENT_OPTIONS_NONE,
-        D2D1_RENDER_TARGET_PROPERTIES, D2D1_ROUNDED_RECT,
+        D2D1CreateFactory, ID2D1Bitmap, ID2D1Factory, ID2D1HwndRenderTarget, ID2D1RenderTarget,
+        ID2D1SolidColorBrush, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+        D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_FACTORY_OPTIONS,
+        D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_HWND_RENDER_TARGET_PROPERTIES,
+        D2D1_PRESENT_OPTIONS_NONE, D2D1_RENDER_TARGET_PROPERTIES, D2D1_ROUNDED_RECT,
     },
     Win32::Graphics::DirectWrite::*,
     Win32::Graphics::Dwm::*,
     Win32::Graphics::Dxgi::Common::*,
     Win32::Graphics::Gdi::*,
+    Win32::Graphics::Imaging::*,
+    Win32::System::Com::*,
     Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress},
     Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD},
     Win32::System::SystemInformation::GetTickCount,
@@ -116,7 +118,10 @@ static mut DWRITE_FACTORY: Option<IDWriteFactory> = None;
 static mut RENDER_TARGET: Option<ID2D1HwndRenderTarget> = None;
 static mut BRUSHES: Option<Brushes> = None;
 static mut DROPDOWN_BRUSHES: Option<Brushes> = None;
+
 static mut FONTS: Option<Fonts> = None;
+static mut APP_ICON_BITMAP: Option<ID2D1Bitmap> = None;
+static mut WIC_FACTORY: Option<IWICImagingFactory> = None;
 
 struct Brushes {
     white: ID2D1SolidColorBrush,
@@ -125,6 +130,8 @@ struct Brushes {
     btn_bg: ID2D1SolidColorBrush,
     btn_hover: ID2D1SolidColorBrush,
     close_hover: ID2D1SolidColorBrush,
+    accent: ID2D1SolidColorBrush,
+    accent_hover: ID2D1SolidColorBrush,
 }
 
 struct Fonts {
@@ -322,8 +329,25 @@ fn is_dark_mode() -> bool {
     }
 }
 
+fn get_accent_color_values() -> (f32, f32, f32) {
+    unsafe {
+        let mut color: u32 = 0;
+        let mut opaque: BOOL = BOOL(0);
+        if DwmGetColorizationColor(&mut color, &mut opaque).is_ok() {
+            let r = ((color >> 16) & 0xFF) as f32 / 255.0;
+            let g = ((color >> 8) & 0xFF) as f32 / 255.0;
+            let b = (color & 0xFF) as f32 / 255.0;
+            (r, g, b)
+        } else {
+            // Default fallback (blue-ish)
+            (0.0, 0.47, 0.84)
+        }
+    }
+}
+
 fn main() -> Result<()> {
     unsafe {
+        CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok();
         load_history();
 
         // Set DPI awareness - Per Monitor V2
@@ -332,28 +356,56 @@ fn main() -> Result<()> {
         let instance = GetModuleHandleW(None)?;
         let class_name = w!("SwiftRunClass");
 
+        // Load Icon early for both windows
+        let h_icon = LoadImageW(
+            instance,
+            w!("icon.ico"),
+            IMAGE_ICON,
+            0,
+            0,
+            LR_DEFAULTSIZE | LR_SHARED,
+        )
+        .map(|h| HICON(h.0 as _))
+        .unwrap_or(LoadIconW(None, IDI_APPLICATION).unwrap_or(HICON(0)));
+
         let wc = WNDCLASSW {
             hCursor: LoadCursorW(None, IDC_ARROW)?,
             hInstance: instance.into(),
             lpszClassName: class_name,
             lpfnWndProc: Some(wndproc),
             hbrBackground: HBRUSH::default(),
+            hIcon: h_icon,
             ..Default::default()
         };
         RegisterClassW(&wc);
 
-        // Center on screen
-        let screen_w = GetSystemMetrics(SM_CXSCREEN);
-        let screen_h = GetSystemMetrics(SM_CYSCREEN);
+        // Position at bottom-left of work area (like original Run dialog)
+        let mut work_area = RECT::default();
+        SystemParametersInfoW(
+            SPI_GETWORKAREA,
+            0,
+            Some(&mut work_area as *mut _ as *mut _),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        );
+
+        let margin_px = 18; // Space from edge/taskbar
+
+        let x = work_area.left + margin_px;
+        let y = work_area.bottom - WIN_H as i32 - margin_px;
 
         // Register Dropdown Class
         let dropdown_class_name = w!("SwiftRunDropdown");
+        // Reuse h_icon for dropdown class too, or just use it.
+        // The original code was loading it again or failing to compile because h_icon was below.
+        // We already moved h_icon definition up. We can just use `h_icon` here or copy it? HICON is Copy.
+
         let wc_dropdown = WNDCLASSW {
             hCursor: LoadCursorW(None, IDC_ARROW).unwrap(),
             hInstance: instance,
             lpszClassName: dropdown_class_name,
             lpfnWndProc: Some(dropdown_wndproc),
             hbrBackground: HBRUSH::default(),
+            hIcon: h_icon,
             ..Default::default()
         };
         RegisterClassW(&wc_dropdown);
@@ -364,8 +416,8 @@ fn main() -> Result<()> {
             class_name,
             w!("SwiftRun"),
             WS_POPUP | WS_VISIBLE,
-            (screen_w / 2) - (WIN_W as i32 / 2),
-            (screen_h / 2) - (WIN_H as i32 / 2),
+            x,
+            y,
             WIN_W as i32,
             WIN_H as i32,
             None,
@@ -772,6 +824,15 @@ unsafe extern "system" fn dropdown_wndproc(
     match msg {
         windows::Win32::UI::WindowsAndMessaging::WM_CREATE => {
             set_acrylic_effect(hwnd);
+
+            // Round corners
+            let v: i32 = 2; // DWMWCP_ROUND
+            let _ = DwmSetWindowAttribute(
+                hwnd,
+                DWMWINDOWATTRIBUTE(33), // DWMWA_WINDOW_CORNER_PREFERENCE
+                &v as *const _ as _,
+                4,
+            );
             LRESULT(0)
         }
         windows::Win32::UI::WindowsAndMessaging::WM_SHOWWINDOW => {
@@ -1078,14 +1139,15 @@ unsafe fn ensure_dropdown_resources(hwnd: HWND) {
         )
         .unwrap();
 
-    let input_bg_col = if is_dark { 0.1 } else { 0.9 };
+    let input_bg_col = 0.0; // Black base for both to ensure darkness
+    let input_bg_alpha = if is_dark { 0.1 } else { 0.1 };
     let input_bg = rt
         .CreateSolidColorBrush(
             &D2D1_COLOR_F {
                 r: input_bg_col,
                 g: input_bg_col,
                 b: input_bg_col,
-                a: 0.15,
+                a: input_bg_alpha,
             },
             None,
         )
@@ -1116,12 +1178,40 @@ unsafe fn ensure_dropdown_resources(hwnd: HWND) {
             None,
         )
         .unwrap();
+
     let close_hover = rt
         .CreateSolidColorBrush(
             &D2D1_COLOR_F {
                 r: 0.769,
                 g: 0.169,
                 b: 0.11,
+                a: 1.0,
+            },
+            None,
+        )
+        .unwrap();
+
+    // Init accent brushes for dropdown (even if not used for buttons, kept for consistency or future use)
+    // Actually dropdown uses Brushes struct too, so it needs these fields.
+    // For dropdown we probably don't use accent strongly, but let's just use defaults or same logic.
+    let (ar, ag, ab) = get_accent_color_values();
+    let accent = rt
+        .CreateSolidColorBrush(
+            &D2D1_COLOR_F {
+                r: ar,
+                g: ag,
+                b: ab,
+                a: 0.9,
+            },
+            None,
+        )
+        .unwrap();
+    let accent_hover = rt
+        .CreateSolidColorBrush(
+            &D2D1_COLOR_F {
+                r: ar,
+                g: ag,
+                b: ab,
                 a: 1.0,
             },
             None,
@@ -1135,6 +1225,8 @@ unsafe fn ensure_dropdown_resources(hwnd: HWND) {
         btn_bg,
         btn_hover,
         close_hover,
+        accent,
+        accent_hover,
     });
 }
 
@@ -1258,6 +1350,30 @@ unsafe fn ensure_resources(hwnd: HWND) {
         )
         .unwrap();
 
+    let (ar, ag, ab) = get_accent_color_values();
+    let accent = rt
+        .CreateSolidColorBrush(
+            &D2D1_COLOR_F {
+                r: ar,
+                g: ag,
+                b: ab,
+                a: 0.9,
+            },
+            None,
+        )
+        .unwrap();
+    let accent_hover = rt
+        .CreateSolidColorBrush(
+            &D2D1_COLOR_F {
+                r: ar,
+                g: ag,
+                b: ab,
+                a: 1.0,
+            },
+            None,
+        )
+        .unwrap();
+
     BRUSHES = Some(Brushes {
         white,
         gray,
@@ -1265,7 +1381,49 @@ unsafe fn ensure_resources(hwnd: HWND) {
         btn_bg,
         btn_hover,
         close_hover,
+        accent,
+        accent_hover,
     });
+
+    if WIC_FACTORY.is_none() {
+        WIC_FACTORY = CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER).ok();
+    }
+
+    if APP_ICON_BITMAP.is_none() {
+        if let Some(wic_factory) = &WIC_FACTORY {
+            // Load Icon
+            let icon_handle = LoadImageW(
+                GetModuleHandleW(None).unwrap(),
+                w!("icon.ico"),
+                IMAGE_ICON,
+                16,
+                16,
+                LR_DEFAULTCOLOR,
+            );
+
+            if let Ok(icon_handle) = icon_handle {
+                if let Ok(bmp) = wic_factory.CreateBitmapFromHICON(HICON(icon_handle.0 as _)) {
+                    // Check if rt supports creation
+                    if let Ok(converter) = wic_factory.CreateFormatConverter() {
+                        converter
+                            .Initialize(
+                                &bmp,
+                                &GUID_WICPixelFormat32bppPBGRA,
+                                WICBitmapDitherTypeNone,
+                                None,
+                                0.0,
+                                WICBitmapPaletteTypeMedianCut,
+                            )
+                            .ok();
+
+                        if let Ok(d2d_bmp) = rt.CreateBitmapFromWicBitmap(&converter, None) {
+                            APP_ICON_BITMAP = Some(d2d_bmp);
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     // Create fonts - each with specific alignment
     let title = dwrite
@@ -1431,13 +1589,29 @@ unsafe fn paint() {
     );
 
     // Title
+    let icon_size = 16.0;
+    if let Some(bitmap) = &APP_ICON_BITMAP {
+        rt.DrawBitmap(
+            bitmap,
+            Some(&D2D_RECT_F {
+                left: MARGIN,
+                top: TITLE_Y + 2.0, // Center vertically with text
+                right: MARGIN + icon_size,
+                bottom: TITLE_Y + 2.0 + icon_size,
+            }),
+            1.0,
+            D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
+            None,
+        );
+    }
+
     rt.DrawText(
         get_str_title(),
         &f.title,
         &D2D_RECT_F {
-            left: MARGIN,
+            left: MARGIN + icon_size + 8.0,
             top: TITLE_Y,
-            right: 100.0,
+            right: 200.0,
             bottom: TITLE_Y + 20.0,
         },
         &b.white,
@@ -1641,6 +1815,12 @@ unsafe fn draw_button(
 
     let bg = if disabled {
         &b.input_bg
+    } else if id == HoverId::Ok {
+        if HOVER == id {
+            &b.accent_hover
+        } else {
+            &b.accent
+        }
     } else if HOVER == id {
         &b.btn_hover
     } else {
