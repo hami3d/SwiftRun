@@ -6,19 +6,22 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::thread;
+use std::time::Instant;
 use windows::{
     core::*,
+    Foundation::Numerics::Matrix3x2,
     Win32::Foundation::*,
     Win32::Graphics::Direct2D::{
         Common::{
             D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_POINT_2F,
             D2D_RECT_F, D2D_SIZE_U,
         },
-        D2D1CreateFactory, ID2D1Bitmap, ID2D1Factory, ID2D1HwndRenderTarget, ID2D1RenderTarget,
-        ID2D1SolidColorBrush, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+        D2D1CreateFactory, ID2D1Bitmap, ID2D1Factory, ID2D1HwndRenderTarget, ID2D1Layer,
+        ID2D1RenderTarget, ID2D1SolidColorBrush, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
         D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_FACTORY_OPTIONS,
         D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_HWND_RENDER_TARGET_PROPERTIES,
-        D2D1_PRESENT_OPTIONS_NONE, D2D1_RENDER_TARGET_PROPERTIES, D2D1_ROUNDED_RECT,
+        D2D1_LAYER_PARAMETERS, D2D1_PRESENT_OPTIONS_NONE, D2D1_RENDER_TARGET_PROPERTIES,
+        D2D1_ROUNDED_RECT,
     },
     Win32::Graphics::DirectWrite::*,
     Win32::Graphics::Dwm::*,
@@ -33,7 +36,7 @@ use windows::{
     Win32::UI::Controls::{EM_GETSEL, EM_SETSEL, MARGINS},
     Win32::UI::HiDpi::{GetDpiForWindow, SetProcessDpiAwareness},
     Win32::UI::Input::KeyboardAndMouse::{
-        GetKeyState, SetFocus, VK_CONTROL, VK_DOWN, VK_RETURN, VK_SHIFT, VK_UP,
+        GetKeyState, SetFocus, VK_BACK, VK_CONTROL, VK_DOWN, VK_RETURN, VK_SHIFT, VK_UP,
     },
     Win32::UI::Shell::ShellExecuteW,
     Win32::UI::WindowsAndMessaging::*,
@@ -57,6 +60,43 @@ static mut TOOLTIP_TEXT: String = String::new();
 static mut H_TOOLTIP: HWND = HWND(0);
 
 static mut IS_CYCLING: bool = false;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum AnimType {
+    None,
+    Entering,
+    Exiting,
+}
+
+static mut ANIM_START_TIME: Option<Instant> = None;
+static mut ANIM_TYPE: AnimType = AnimType::None;
+static mut FINAL_X: i32 = 0;
+static mut FINAL_Y: i32 = 0;
+static mut START_Y: i32 = 0;
+const ANIM_ENTER_DURATION_MS: u128 = 750;
+const ANIM_EXIT_DURATION_MS: u128 = 200;
+const ANIM_DROPDOWN_DURATION_MS: u128 = 250;
+const ANIM_TOOLTIP_DURATION_MS: u128 = 300;
+
+static mut DROPDOWN_ANIM_START: Option<Instant> = None;
+static mut DROPDOWN_ANIM_TYPE: AnimType = AnimType::None;
+
+static mut TOOLTIP_ANIM_START: Option<Instant> = None;
+static mut TOOLTIP_ANIM_TYPE: AnimType = AnimType::None;
+
+fn ease_out_quad(t: f32) -> f32 {
+    t * (2.0 - t)
+}
+
+fn ease_out_cubic(t: f32) -> f32 {
+    1.0 - (1.0 - t).powi(3)
+}
+
+fn ease_out_back(t: f32) -> f32 {
+    let c1 = 1.70158;
+    let c3 = c1 + 1.0;
+    1.0 + c3 * (t - 1.0).powi(3) + c1 * (t - 1.0).powi(2)
+}
 
 // Static strings caching
 static STR_TITLE: std::sync::OnceLock<Vec<u16>> = std::sync::OnceLock::new();
@@ -140,6 +180,7 @@ struct Brushes {
     accent_hover: ID2D1SolidColorBrush,
     selection: ID2D1SolidColorBrush,
     input_border: ID2D1SolidColorBrush,
+    placeholder: ID2D1SolidColorBrush,
 }
 
 struct Fonts {
@@ -377,6 +418,7 @@ fn main() -> Result<()> {
         .unwrap_or(LoadIconW(None, IDI_APPLICATION).unwrap_or(HICON(0)));
 
         let wc = WNDCLASSW {
+            style: CS_DBLCLKS,
             hCursor: LoadCursorW(None, IDC_ARROW)?,
             hInstance: instance.into(),
             lpszClassName: class_name,
@@ -431,14 +473,18 @@ fn main() -> Result<()> {
         };
         RegisterClassW(&wc_tooltip);
 
-        // Create Main Window
+        FINAL_X = x;
+        FINAL_Y = y;
+        START_Y = work_area.bottom;
+
+        // Create Main Window initially at bottom (hidden or off-screen)
         let hwnd = CreateWindowExW(
             WINDOW_EX_STYLE::default(),
             class_name,
             w!("SwiftRun"),
             WS_POPUP | WS_VISIBLE, // Removed WS_CLIPCHILDREN - D2D doesn't respect it
             x,
-            y,
+            START_Y, // Start at bottom edge
             WIN_W as i32,
             WIN_H as i32,
             None,
@@ -514,38 +560,69 @@ fn main() -> Result<()> {
 
         // Setup blink timer
         let blink_time = GetCaretBlinkTime();
+        let blink_time = if blink_time == 0 { 500 } else { blink_time };
         SetTimer(hwnd, 1, blink_time, None);
+
+        // Setup Animation Timer
+        ANIM_TYPE = AnimType::Entering;
+        ANIM_START_TIME = Some(Instant::now());
+        SetTimer(hwnd, 3, 10, None);
 
         SetFocus(hwnd);
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).into() {
             // Keyboard hooks for Edit control
-            if msg.message == WM_KEYDOWN && msg.hwnd == H_EDIT {
+            if (msg.message == WM_KEYDOWN || msg.message == WM_KEYUP) && msg.hwnd == H_EDIT {
                 let vk = msg.wParam.0 as i32;
-                if vk == VK_UP.0 as i32 {
-                    cycle_history(-1); // Swapped: Up is now newer
-                    InvalidateRect(hwnd, None, BOOL(0)); // Repaint to show new text
-                    continue;
+
+                if msg.message == WM_KEYDOWN {
+                    if vk == VK_UP.0 as i32 {
+                        cycle_history(-1); // Swapped: Up is now newer
+                        InvalidateRect(hwnd, None, BOOL(0)); // Repaint to show new text
+                        continue;
+                    }
+                    if vk == VK_DOWN.0 as i32 {
+                        cycle_history(1); // Swapped: Down is now older
+                        InvalidateRect(hwnd, None, BOOL(0)); // Repaint to show new text
+                        continue;
+                    }
+
+                    // Ctrl+Shift+Backspace to clear history
+                    let ctrl = GetKeyState(VK_CONTROL.0 as i32) < 0;
+                    let shift = GetKeyState(VK_SHIFT.0 as i32) < 0;
+                    if ctrl && shift && vk == VK_BACK.0 as i32 {
+                        if let Some(path) = get_history_path() {
+                            let _ = fs::remove_file(path);
+                        }
+                        HISTORY = Some(Vec::new());
+                        HISTORY_INDEX = -1;
+                        if SHOW_DROPDOWN {
+                            SHOW_DROPDOWN = false;
+                            ShowWindow(H_DROPDOWN, SW_HIDE);
+                        }
+                        show_tooltip("Command History Has Been Cleared");
+                        InvalidateRect(hwnd, None, BOOL(0));
+                        continue;
+                    }
+
+                    if vk == VK_RETURN.0 as i32 {
+                        // Run command
+                        let main_hwnd = FindWindowW(w!("SwiftRunClass"), w!("SwiftRun"));
+                        PostMessageW(main_hwnd, WM_APP_RUN_COMMAND, WPARAM(0), LPARAM(0));
+                        continue;
+                    }
                 }
-                if vk == VK_DOWN.0 as i32 {
-                    cycle_history(1); // Swapped: Down is now older
-                    InvalidateRect(hwnd, None, BOOL(0)); // Repaint to show new text
-                    continue;
-                }
-                if vk == VK_RETURN.0 as i32 {
-                    // Run command
-                    let main_hwnd = FindWindowW(w!("SwiftRunClass"), w!("SwiftRun"));
-                    PostMessageW(main_hwnd, WM_APP_RUN_COMMAND, WPARAM(0), LPARAM(0));
-                    continue;
-                }
+
+                // For any other key (shortcuts like Ctrl+A, Shift+Arrows, etc), trigger repaint
+                InvalidateRect(hwnd, None, BOOL(0));
             }
 
             // Allow standard processing
             if msg.message == WM_KEYDOWN {
                 if msg.wParam.0 == 0x1B {
                     // VK_ESCAPE
-                    PostQuitMessage(0);
+                    start_exit_animation(hwnd);
                     continue;
                 }
             }
@@ -604,6 +681,25 @@ fn hit_test(x: i32, y: i32, w: f32, _h: f32, input_empty: bool) -> HoverId {
     HoverId::None
 }
 
+unsafe fn start_exit_animation(hwnd: HWND) {
+    if ANIM_TYPE == AnimType::Exiting {
+        return;
+    }
+    // Dismiss dropdown and tooltip immediately
+    if SHOW_DROPDOWN {
+        SHOW_DROPDOWN = false;
+        ShowWindow(H_DROPDOWN, SW_HIDE);
+    }
+    if H_TOOLTIP.0 != 0 {
+        DestroyWindow(H_TOOLTIP);
+        H_TOOLTIP = HWND(0);
+    }
+
+    ANIM_TYPE = AnimType::Exiting;
+    ANIM_START_TIME = Some(Instant::now());
+    SetTimer(hwnd, 3, 10, None);
+}
+
 fn run_command() {
     unsafe {
         let mut input_str = String::new();
@@ -619,8 +715,6 @@ fn run_command() {
         }
 
         let main_hwnd = FindWindowW(w!("SwiftRunClass"), w!("SwiftRun"));
-        // Hide immediately to prevent freeze feeling
-        ShowWindow(main_hwnd, SW_HIDE);
 
         // 1. Check for Protocol/URL (regex-like check)
         // If it looks like a URL, let ShellExecute handle it entirely.
@@ -768,7 +862,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 LRESULT(0)
             }
             WM_APP_CLOSE => {
-                PostQuitMessage(0);
+                start_exit_animation(hwnd);
                 LRESULT(0)
             }
             WM_APP_ERROR => {
@@ -778,6 +872,10 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 if let Ok(buf) = INPUT_BUFFER.lock() {
                     show_tooltip(&format!("This Command Doesn't Exist: '{}'!", buf));
                 }
+                LRESULT(0)
+            }
+            WM_CLOSE => {
+                start_exit_animation(hwnd);
                 LRESULT(0)
             }
             WM_SIZE => {
@@ -790,14 +888,15 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 }
 
                 // Resize Edit Control
+                let w = (lp.0 & 0xFFFF) as i32;
                 SetWindowPos(
                     H_EDIT,
-                    HWND_TOP,
+                    None,
                     -10000, // Move off-screen - Edit control is hidden, only used for input handling
                     -10000,
-                    10,
-                    10,
-                    SWP_NOZORDER,
+                    w,
+                    50,
+                    SWP_NOZORDER | SWP_NOACTIVATE,
                 );
 
                 InvalidateRect(hwnd, None, BOOL(0));
@@ -918,6 +1017,103 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             WM_TIMER => {
                 if wp.0 == 1 {
                     InvalidateRect(hwnd, None, BOOL(0));
+                } else if wp.0 == 3 {
+                    let mut still_animating = false;
+
+                    // Main Window Animation
+                    if let Some(start) = ANIM_START_TIME {
+                        let elapsed = start.elapsed().as_millis();
+                        match ANIM_TYPE {
+                            AnimType::Entering => {
+                                let progress =
+                                    (elapsed as f32 / ANIM_ENTER_DURATION_MS as f32).min(1.0);
+                                let eased = ease_out_cubic(progress);
+                                let current_y =
+                                    START_Y - ((START_Y - FINAL_Y) as f32 * eased) as i32;
+                                SetWindowPos(
+                                    hwnd,
+                                    None,
+                                    FINAL_X,
+                                    current_y,
+                                    0,
+                                    0,
+                                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+                                );
+                                if progress < 1.0 {
+                                    still_animating = true;
+                                } else {
+                                    ANIM_TYPE = AnimType::None;
+                                    SetWindowPos(
+                                        hwnd,
+                                        None,
+                                        FINAL_X,
+                                        FINAL_Y,
+                                        0,
+                                        0,
+                                        SWP_NOSIZE | SWP_NOZORDER,
+                                    );
+                                }
+                            }
+                            AnimType::Exiting => {
+                                let progress =
+                                    (elapsed as f32 / ANIM_EXIT_DURATION_MS as f32).min(1.0);
+                                let eased = ease_out_quad(progress);
+                                let current_y =
+                                    FINAL_Y + ((START_Y - FINAL_Y) as f32 * eased) as i32;
+                                SetWindowPos(
+                                    hwnd,
+                                    None,
+                                    FINAL_X,
+                                    current_y,
+                                    0,
+                                    0,
+                                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+                                );
+                                if progress < 1.0 {
+                                    still_animating = true;
+                                } else {
+                                    ANIM_TYPE = AnimType::None;
+                                    DestroyWindow(hwnd);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    // Dropdown Animation
+                    if let Some(start) = DROPDOWN_ANIM_START {
+                        let elapsed = start.elapsed().as_millis();
+                        let progress = (elapsed as f32 / ANIM_DROPDOWN_DURATION_MS as f32).min(1.0);
+                        if progress < 1.0 {
+                            still_animating = true;
+                        } else if DROPDOWN_ANIM_TYPE == AnimType::Exiting {
+                            ShowWindow(H_DROPDOWN, SW_HIDE);
+                            DROPDOWN_ANIM_TYPE = AnimType::None;
+                        } else {
+                            DROPDOWN_ANIM_TYPE = AnimType::None;
+                        }
+                        InvalidateRect(H_DROPDOWN, None, BOOL(0));
+                    }
+
+                    // Tooltip Animation
+                    if let Some(start) = TOOLTIP_ANIM_START {
+                        let elapsed = start.elapsed().as_millis();
+                        let progress = (elapsed as f32 / ANIM_TOOLTIP_DURATION_MS as f32).min(1.0);
+                        if progress < 1.0 {
+                            still_animating = true;
+                        } else if TOOLTIP_ANIM_TYPE == AnimType::Exiting {
+                            DestroyWindow(H_TOOLTIP);
+                            H_TOOLTIP = HWND(0);
+                            TOOLTIP_ANIM_TYPE = AnimType::None;
+                        } else {
+                            TOOLTIP_ANIM_TYPE = AnimType::None;
+                        }
+                        InvalidateRect(H_TOOLTIP, None, BOOL(0));
+                    }
+
+                    if !still_animating {
+                        KillTimer(hwnd, 3);
+                    }
                 }
                 LRESULT(0)
             }
@@ -948,8 +1144,57 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                     HOVER = new_hover;
                     InvalidateRect(hwnd, None, BOOL(0));
                 }
+
+                if wp.0 & 0x0001 != 0 {
+                    // MK_LBUTTON is down, forward for drag selection
+                    let lx_px = ((sx - (MARGIN + 10.0)) * scale) as i32;
+                    let ly_px = (20.0 * scale) as i32;
+                    let n_lp =
+                        LPARAM(((lx_px & 0xFFFF) as isize) | (((ly_px & 0xFFFF) as isize) << 16));
+                    SendMessageW(H_EDIT, WM_MOUSEMOVE, wp, n_lp);
+                    InvalidateRect(hwnd, None, BOOL(0));
+                }
+
                 LRESULT(0)
             }
+
+            WM_LBUTTONUP => {
+                let _ = windows::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture().ok();
+                let x = (lp.0 & 0xFFFF) as i16 as i32;
+                let scale = get_dpi_scale(hwnd);
+                let sx = x as f32 / scale;
+                let lx_px = ((sx - (MARGIN + 10.0)) * scale) as i32;
+                let ly_px = (20.0 * scale) as i32;
+                let n_lp =
+                    LPARAM(((lx_px & 0xFFFF) as isize) | (((ly_px & 0xFFFF) as isize) << 16));
+                SendMessageW(H_EDIT, WM_LBUTTONUP, wp, n_lp);
+                InvalidateRect(hwnd, None, BOOL(0));
+                LRESULT(0)
+            }
+
+            WM_LBUTTONDBLCLK => {
+                let x = (lp.0 & 0xFFFF) as i16 as i32;
+                let y = ((lp.0 >> 16) & 0xFFFF) as i16 as i32;
+                let mut cr = RECT::default();
+                GetClientRect(hwnd, &mut cr);
+                let scale = get_dpi_scale(hwnd);
+                let w = (cr.right - cr.left) as f32 / scale;
+                let h = (cr.bottom - cr.top) as f32 / scale;
+                let sx = x as f32 / scale;
+                let sy = y as f32 / scale;
+
+                if hit_test(sx as i32, sy as i32, w, h, is_input_empty()) == HoverId::Input {
+                    let lx_px = ((sx - (MARGIN + 10.0)) * scale) as i32;
+                    let ly_px = (20.0 * scale) as i32;
+                    let n_lp =
+                        LPARAM(((lx_px & 0xFFFF) as isize) | (((ly_px & 0xFFFF) as isize) << 16));
+                    SendMessageW(H_EDIT, WM_LBUTTONDBLCLK, wp, n_lp);
+                    InvalidateRect(hwnd, None, BOOL(0));
+                }
+                LRESULT(0)
+            }
+
+            WM_CAPTURECHANGED => LRESULT(0),
 
             WM_LBUTTONDOWN => {
                 // Dismiss tooltip if visible
@@ -971,14 +1216,22 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 let sy = y as f32 / scale;
 
                 match hit_test(sx as i32, sy as i32, w, h, is_input_empty()) {
-                    HoverId::Close => PostQuitMessage(0),
+                    HoverId::Close => start_exit_animation(hwnd),
                     HoverId::Min => {
                         ShowWindow(hwnd, SW_MINIMIZE);
                     }
                     HoverId::Ok => run_command(),
-                    HoverId::Cancel => PostQuitMessage(0),
+                    HoverId::Cancel => start_exit_animation(hwnd),
                     HoverId::Input => {
+                        windows::Win32::UI::Input::KeyboardAndMouse::SetCapture(hwnd);
+                        let lx_px = ((sx - (MARGIN + 10.0)) * scale) as i32;
+                        let ly_px = (20.0 * scale) as i32;
+                        let n_lp = LPARAM(
+                            ((lx_px & 0xFFFF) as isize) | (((ly_px & 0xFFFF) as isize) << 16),
+                        );
+                        SendMessageW(H_EDIT, WM_LBUTTONDOWN, wp, n_lp);
                         SetFocus(H_EDIT);
+                        InvalidateRect(hwnd, None, BOOL(0));
                     }
                     HoverId::None => {
                         SetFocus(H_EDIT);
@@ -989,50 +1242,59 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                         }
                     }
                     HoverId::Dropdown => {
-                        SHOW_DROPDOWN = !SHOW_DROPDOWN;
-                        SCROLL_OFFSET = 0;
+                        let is_empty = HISTORY.as_ref().map_or(true, |h| h.is_empty());
 
-                        if SHOW_DROPDOWN {
-                            // Show dropdown
-                            let mut rect = RECT::default();
-                            GetWindowRect(hwnd, &mut rect);
-                            let scale = get_dpi_scale(hwnd);
-
-                            let margin_px = (MARGIN * scale) as i32;
-                            let input_y_px = ((INPUT_Y + INPUT_H) * scale) as i32;
-                            let spacing_px = (5.0 * scale) as i32;
-
-                            let x = rect.left + margin_px;
-                            let y = rect.top + input_y_px + spacing_px;
-                            let w = (rect.right - rect.left) - (margin_px * 2);
-
-                            let mut h = 0;
-                            if let Some(history) = HISTORY.as_ref() {
-                                let count = history.len().min(3);
-                                if count > 0 {
-                                    h = (count as f32 * ITEM_H * scale) as i32;
-                                }
-                            }
-
-                            if h > 0 {
-                                SetWindowPos(
-                                    H_DROPDOWN,
-                                    HWND_TOPMOST,
-                                    x,
-                                    y,
-                                    w,
-                                    h,
-                                    SWP_SHOWWINDOW | SWP_NOACTIVATE,
-                                );
-                            } else {
-                                SHOW_DROPDOWN = false;
-                            }
+                        if is_empty {
+                            show_tooltip("No Command History Found");
                         } else {
-                            // Hide dropdown
-                            ShowWindow(H_DROPDOWN, SW_HIDE);
-                        }
+                            if !SHOW_DROPDOWN {
+                                // Show
+                                SHOW_DROPDOWN = true;
+                                HOVER_DROPDOWN = Some(0);
+                                SCROLL_OFFSET = 0;
 
-                        InvalidateRect(hwnd, None, BOOL(0));
+                                let mut rect = RECT::default();
+                                GetWindowRect(hwnd, &mut rect);
+                                let scale = get_dpi_scale(hwnd);
+                                let margin_px = (MARGIN * scale) as i32;
+                                let input_y_px = ((INPUT_Y + INPUT_H) * scale) as i32;
+                                let spacing_px = (5.0 * scale) as i32;
+                                let x = rect.left + margin_px;
+                                let y = rect.top + input_y_px + spacing_px;
+                                let w = (rect.right - rect.left) - (margin_px * 2);
+                                let mut h = 0;
+                                if let Some(history) = HISTORY.as_ref() {
+                                    let count = history.len().min(5);
+                                    if count > 0 {
+                                        h = (count as f32 * ITEM_H * scale) as i32;
+                                    }
+                                }
+                                if h > 0 {
+                                    SetWindowPos(
+                                        H_DROPDOWN,
+                                        HWND_TOPMOST,
+                                        x,
+                                        y,
+                                        w,
+                                        h,
+                                        SWP_SHOWWINDOW | SWP_NOACTIVATE,
+                                    );
+                                    DROPDOWN_ANIM_START = Some(Instant::now());
+                                    DROPDOWN_ANIM_TYPE = AnimType::Entering;
+                                    SetTimer(hwnd, 3, 16, None);
+                                    UpdateWindow(H_DROPDOWN);
+                                } else {
+                                    SHOW_DROPDOWN = false;
+                                }
+                            } else {
+                                // Hide
+                                SHOW_DROPDOWN = false;
+                                DROPDOWN_ANIM_START = Some(Instant::now());
+                                DROPDOWN_ANIM_TYPE = AnimType::Exiting;
+                                SetTimer(hwnd, 3, 16, None);
+                                InvalidateRect(hwnd, None, BOOL(0));
+                            }
+                        }
                     } // HistoryItem click is now handled in dropdown_wndproc
                 }
                 LRESULT(0)
@@ -1132,9 +1394,14 @@ unsafe extern "system" fn dropdown_wndproc(
             );
             LRESULT(0)
         }
+        windows::Win32::UI::WindowsAndMessaging::WM_SIZE => {
+            DROPDOWN_BRUSHES = None; // Force brush refresh on next paint
+            InvalidateRect(hwnd, None, BOOL(0));
+            LRESULT(0)
+        }
+        windows::Win32::UI::WindowsAndMessaging::WM_ERASEBKGND => LRESULT(1), // Prevent flicker
         windows::Win32::UI::WindowsAndMessaging::WM_SHOWWINDOW => {
             if wp.0 == 1 {
-                set_acrylic_effect(hwnd);
                 InvalidateRect(hwnd, None, BOOL(0));
             }
             LRESULT(0)
@@ -1156,6 +1423,32 @@ unsafe extern "system" fn dropdown_wndproc(
                         if let Ok(rt) = target.cast::<ID2D1RenderTarget>() {
                             rt.SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
                             target.BeginDraw();
+
+                            // Draw background
+                            let size = target.GetSize();
+                            let w = size.width;
+                            let h = size.height;
+
+                            // Animation logic
+                            let mut alpha = 1.0;
+                            let mut y_off = 0.0;
+                            if let Some(start) = DROPDOWN_ANIM_START {
+                                let elapsed = start.elapsed().as_millis();
+                                let progress =
+                                    (elapsed as f32 / ANIM_DROPDOWN_DURATION_MS as f32).min(1.0);
+                                match DROPDOWN_ANIM_TYPE {
+                                    AnimType::Entering => {
+                                        alpha = ease_out_cubic(progress);
+                                        y_off = -10.0 * (1.0 - alpha);
+                                    }
+                                    AnimType::Exiting => {
+                                        alpha = 1.0 - ease_out_cubic(progress);
+                                        y_off = -5.0 * (1.0 - alpha);
+                                    }
+                                    _ => {}
+                                }
+                            }
+
                             target.Clear(Some(&D2D1_COLOR_F {
                                 r: 0.0,
                                 g: 0.0,
@@ -1163,10 +1456,24 @@ unsafe extern "system" fn dropdown_wndproc(
                                 a: 0.0,
                             }));
 
-                            // Draw background
-                            let size = target.GetSize();
-                            let w = size.width;
-                            let h = size.height;
+                            // We can't easily set global alpha on brushes here without recreating them,
+                            // but we can PushLayer specifically for opacity.
+                            let layer_params = D2D1_LAYER_PARAMETERS {
+                                contentBounds: D2D_RECT_F {
+                                    left: 0.0,
+                                    top: 0.0,
+                                    right: w as f32,
+                                    bottom: h as f32,
+                                },
+                                opacity: alpha,
+                                ..Default::default()
+                            };
+
+                            if let Ok(layer) = target.CreateLayer(None) {
+                                target.PushLayer(&layer_params, &layer);
+                            }
+
+                            rt.SetTransform(&Matrix3x2::translation(0.0, y_off));
 
                             rt.FillRoundedRectangle(
                                 &D2D1_ROUNDED_RECT {
@@ -1254,7 +1561,17 @@ unsafe extern "system" fn dropdown_wndproc(
                                 }
                             }
 
-                            target.EndDraw(None, None).ok();
+                            target.PopLayer();
+                            rt.SetTransform(&Matrix3x2::identity());
+
+                            let result = target.EndDraw(None, None);
+                            if let Err(e) = result {
+                                if e.code() == HRESULT(0x8899000Cu32 as i32) {
+                                    DROPDOWN_RENDER_TARGET = None;
+                                    DROPDOWN_BRUSHES = None;
+                                    InvalidateRect(hwnd, None, BOOL(0));
+                                }
+                            }
                         }
                     }
                 }
@@ -1283,7 +1600,12 @@ unsafe extern "system" fn dropdown_wndproc(
 
                         // Close dropdown
                         SHOW_DROPDOWN = false;
-                        ShowWindow(hwnd, SW_HIDE);
+                        unsafe {
+                            let main_hwnd = FindWindowW(w!("SwiftRunClass"), w!("SwiftRun"));
+                            DROPDOWN_ANIM_START = Some(Instant::now());
+                            DROPDOWN_ANIM_TYPE = AnimType::Exiting;
+                            SetTimer(main_hwnd, 3, 16, None);
+                        }
 
                         // Set focus back to edit
                         SetFocus(H_EDIT);
@@ -1349,429 +1671,14 @@ unsafe extern "system" fn dropdown_wndproc(
     }
 }
 
-unsafe fn ensure_dropdown_resources(hwnd: HWND) {
-    if DROPDOWN_RENDER_TARGET.is_none() {
-        let Some(factory) = &D2D_FACTORY else { return };
-
-        let mut rect = RECT::default();
-        GetWindowRect(hwnd, &mut rect);
-        let w = (rect.right - rect.left) as u32;
-        let h = (rect.bottom - rect.top) as u32;
-
-        // If size is 0, don't create target yet
-        if w == 0 || h == 0 {
-            return;
-        }
-
-        let dpi = GetDpiForWindow(hwnd) as f32;
-        let props = D2D1_RENDER_TARGET_PROPERTIES {
-            pixelFormat: D2D1_PIXEL_FORMAT {
-                format: DXGI_FORMAT_B8G8R8A8_UNORM,
-                alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
-            },
-            dpiX: dpi,
-            dpiY: dpi,
-            ..Default::default()
-        };
-        let hwnd_props = D2D1_HWND_RENDER_TARGET_PROPERTIES {
-            hwnd,
-            pixelSize: D2D_SIZE_U {
-                width: w,
-                height: h,
-            },
-            presentOptions: D2D1_PRESENT_OPTIONS_NONE,
-        };
-
-        if let Ok(target) = factory.CreateHwndRenderTarget(&props, &hwnd_props) {
-            DROPDOWN_RENDER_TARGET = Some(target);
-        }
-    } else {
-        // Check if resize is needed
-        if let Some(target) = &DROPDOWN_RENDER_TARGET {
-            let mut rect = RECT::default();
-            GetWindowRect(hwnd, &mut rect);
-            let w = (rect.right - rect.left) as u32;
-            let h = (rect.bottom - rect.top) as u32;
-
-            let size = target.GetPixelSize();
-            if size.width != w || size.height != h {
-                target
-                    .Resize(&windows::Win32::Graphics::Direct2D::Common::D2D_SIZE_U {
-                        width: w,
-                        height: h,
-                    })
-                    .ok();
-            }
-        }
-    }
-
-    if DROPDOWN_BRUSHES.is_some() {
+unsafe fn ensure_fonts() {
+    if FONTS.is_some() {
         return;
     }
 
-    let Some(target) = &DROPDOWN_RENDER_TARGET else {
-        return;
-    };
-    let rt: ID2D1RenderTarget = target.cast().unwrap();
-
-    // Create brushes
-    let is_dark = is_dark_mode();
-
-    let text_col = if is_dark { 1.0 } else { 0.0 };
-    let white = rt
-        .CreateSolidColorBrush(
-            &D2D1_COLOR_F {
-                r: text_col,
-                g: text_col,
-                b: text_col,
-                a: 1.0,
-            },
-            None,
-        )
-        .unwrap();
-
-    let gray_col = if is_dark { 0.6 } else { 0.4 };
-    let gray = rt
-        .CreateSolidColorBrush(
-            &D2D1_COLOR_F {
-                r: gray_col,
-                g: gray_col,
-                b: gray_col,
-                a: 0.5,
-            },
-            None,
-        )
-        .unwrap();
-
-    let input_bg_col = 0.0; // Black base for both to ensure darkness
-    let input_bg_alpha = if is_dark { 0.1 } else { 0.1 };
-    let input_bg = rt
-        .CreateSolidColorBrush(
-            &D2D1_COLOR_F {
-                r: input_bg_col,
-                g: input_bg_col,
-                b: input_bg_col,
-                a: input_bg_alpha,
-            },
-            None,
-        )
-        .unwrap();
-
-    let btn_bg_col = if is_dark { 0.2 } else { 0.95 };
-    let btn_bg = rt
-        .CreateSolidColorBrush(
-            &D2D1_COLOR_F {
-                r: btn_bg_col,
-                g: btn_bg_col,
-                b: btn_bg_col,
-                a: 0.9,
-            },
-            None,
-        )
-        .unwrap();
-
-    let btn_hover_col = if is_dark { 0.35 } else { 0.85 };
-    let btn_hover = rt
-        .CreateSolidColorBrush(
-            &D2D1_COLOR_F {
-                r: btn_hover_col,
-                g: btn_hover_col,
-                b: btn_hover_col,
-                a: 0.95,
-            },
-            None,
-        )
-        .unwrap();
-
-    let close_hover = rt
-        .CreateSolidColorBrush(
-            &D2D1_COLOR_F {
-                r: 0.769,
-                g: 0.169,
-                b: 0.11,
-                a: 1.0,
-            },
-            None,
-        )
-        .unwrap();
-
-    // Init accent brushes for dropdown (even if not used for buttons, kept for consistency or future use)
-    // Actually dropdown uses Brushes struct too, so it needs these fields.
-    // For dropdown we probably don't use accent strongly, but let's just use defaults or same logic.
-    let (ar, ag, ab) = get_accent_color_values();
-    let accent = rt
-        .CreateSolidColorBrush(
-            &D2D1_COLOR_F {
-                r: ar,
-                g: ag,
-                b: ab,
-                a: 0.9,
-            },
-            None,
-        )
-        .unwrap();
-    let accent_hover = rt
-        .CreateSolidColorBrush(
-            &D2D1_COLOR_F {
-                r: ar,
-                g: ag,
-                b: ab,
-                a: 1.0,
-            },
-            None,
-        )
-        .unwrap();
-
-    DROPDOWN_BRUSHES = Some(Brushes {
-        white,
-        gray,
-        input_bg,
-        btn_bg,
-        btn_hover,
-        close_hover,
-        accent,
-        accent_hover,
-        selection: rt
-            .CreateSolidColorBrush(
-                &D2D1_COLOR_F {
-                    r: ar,
-                    g: ag,
-                    b: ab,
-                    a: 0.4,
-                },
-                None,
-            )
-            .unwrap(),
-        input_border: rt
-            .CreateSolidColorBrush(
-                &D2D1_COLOR_F {
-                    r: gray_col,
-                    g: gray_col,
-                    b: gray_col,
-                    a: 0.15, // Extra subtle
-                },
-                None,
-            )
-            .unwrap(),
-    });
-}
-
-unsafe fn ensure_resources(hwnd: HWND) {
-    if RENDER_TARGET.is_none() {
-        let Some(factory) = &D2D_FACTORY else { return };
-        let Some(_dwrite) = &DWRITE_FACTORY else {
-            return;
-        };
-
-        let dpi = GetDpiForWindow(hwnd) as f32;
-        let props = D2D1_RENDER_TARGET_PROPERTIES {
-            pixelFormat: D2D1_PIXEL_FORMAT {
-                format: DXGI_FORMAT_B8G8R8A8_UNORM,
-                alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
-            },
-            dpiX: dpi,
-            dpiY: dpi,
-            ..Default::default()
-        };
-        let hwnd_props = D2D1_HWND_RENDER_TARGET_PROPERTIES {
-            hwnd,
-            pixelSize: D2D_SIZE_U {
-                width: WIN_W as u32,
-                height: WIN_H as u32,
-            },
-            presentOptions: D2D1_PRESENT_OPTIONS_NONE,
-        };
-
-        if let Ok(target) = factory.CreateHwndRenderTarget(&props, &hwnd_props) {
-            RENDER_TARGET = Some(target);
-        }
-    }
-
-    if BRUSHES.is_some() && FONTS.is_some() {
-        return;
-    }
-
-    let Some(target) = &RENDER_TARGET else { return };
     let Some(dwrite) = &DWRITE_FACTORY else {
         return;
     };
-    let rt: ID2D1RenderTarget = target.cast().unwrap();
-
-    // Create brushes
-    let is_dark = is_dark_mode();
-
-    let text_col = if is_dark { 1.0 } else { 0.0 };
-    let white = rt
-        .CreateSolidColorBrush(
-            &D2D1_COLOR_F {
-                r: text_col,
-                g: text_col,
-                b: text_col,
-                a: 1.0,
-            },
-            None,
-        )
-        .unwrap();
-
-    let gray_col = if is_dark { 0.6 } else { 0.4 };
-    let gray = rt
-        .CreateSolidColorBrush(
-            &D2D1_COLOR_F {
-                r: gray_col,
-                g: gray_col,
-                b: gray_col,
-                a: 0.5,
-            },
-            None,
-        )
-        .unwrap();
-
-    let input_bg_col = if is_dark { 0.1 } else { 0.9 };
-    let input_bg = rt
-        .CreateSolidColorBrush(
-            &D2D1_COLOR_F {
-                r: input_bg_col,
-                g: input_bg_col,
-                b: input_bg_col,
-                a: 0.15,
-            },
-            None,
-        )
-        .unwrap();
-
-    let btn_bg_col = if is_dark { 0.2 } else { 0.95 };
-    let btn_bg = rt
-        .CreateSolidColorBrush(
-            &D2D1_COLOR_F {
-                r: btn_bg_col,
-                g: btn_bg_col,
-                b: btn_bg_col,
-                a: 0.9,
-            },
-            None,
-        )
-        .unwrap();
-
-    let btn_hover_col = if is_dark { 0.35 } else { 0.85 };
-    let btn_hover = rt
-        .CreateSolidColorBrush(
-            &D2D1_COLOR_F {
-                r: btn_hover_col,
-                g: btn_hover_col,
-                b: btn_hover_col,
-                a: 0.95,
-            },
-            None,
-        )
-        .unwrap();
-    let close_hover = rt
-        .CreateSolidColorBrush(
-            &D2D1_COLOR_F {
-                r: 0.769,
-                g: 0.169,
-                b: 0.11,
-                a: 1.0,
-            },
-            None,
-        )
-        .unwrap();
-
-    let (ar, ag, ab) = get_accent_color_values();
-    let accent = rt
-        .CreateSolidColorBrush(
-            &D2D1_COLOR_F {
-                r: ar,
-                g: ag,
-                b: ab,
-                a: 0.9,
-            },
-            None,
-        )
-        .unwrap();
-    let accent_hover = rt
-        .CreateSolidColorBrush(
-            &D2D1_COLOR_F {
-                r: ar,
-                g: ag,
-                b: ab,
-                a: 1.0,
-            },
-            None,
-        )
-        .unwrap();
-
-    BRUSHES = Some(Brushes {
-        white,
-        gray,
-        input_bg,
-        btn_bg,
-        btn_hover,
-        close_hover,
-        accent,
-        accent_hover,
-        selection: rt
-            .CreateSolidColorBrush(
-                &D2D1_COLOR_F {
-                    r: ar,
-                    g: ag,
-                    b: ab,
-                    a: 0.4,
-                },
-                None,
-            )
-            .unwrap(),
-        input_border: rt
-            .CreateSolidColorBrush(
-                &D2D1_COLOR_F {
-                    r: gray_col,
-                    g: gray_col,
-                    b: gray_col,
-                    a: 0.15, // Extra subtle
-                },
-                None,
-            )
-            .unwrap(),
-    });
-
-    if WIC_FACTORY.is_none() {
-        WIC_FACTORY = CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER).ok();
-    }
-
-    if APP_ICON_BITMAP.is_none() {
-        if let Some(wic_factory) = &WIC_FACTORY {
-            // Load Icon
-            let icon_handle = LoadImageW(
-                GetModuleHandleW(None).unwrap(),
-                w!("icon.ico"),
-                IMAGE_ICON,
-                32,
-                32,
-                LR_DEFAULTCOLOR,
-            );
-
-            if let Ok(icon_handle) = icon_handle {
-                if let Ok(bmp) = wic_factory.CreateBitmapFromHICON(HICON(icon_handle.0 as _)) {
-                    // Check if rt supports creation
-                    if let Ok(converter) = wic_factory.CreateFormatConverter() {
-                        converter
-                            .Initialize(
-                                &bmp,
-                                &GUID_WICPixelFormat32bppPBGRA,
-                                WICBitmapDitherTypeNone,
-                                None,
-                                0.0,
-                                WICBitmapPaletteTypeMedianCut,
-                            )
-                            .ok();
-
-                        if let Ok(d2d_bmp) = rt.CreateBitmapFromWicBitmap(&converter, None) {
-                            APP_ICON_BITMAP = Some(d2d_bmp);
-                        }
-                    }
-                }
-            }
-        }
-    }
 
     // Create fonts - each with specific alignment
     let title = dwrite
@@ -1845,6 +1752,457 @@ unsafe fn ensure_resources(hwnd: HWND) {
         button,
         tooltip,
     });
+}
+
+unsafe fn ensure_dropdown_resources(hwnd: HWND) {
+    ensure_fonts();
+    if DROPDOWN_RENDER_TARGET.is_none() {
+        let Some(factory) = &D2D_FACTORY else { return };
+
+        let mut rect = RECT::default();
+        GetWindowRect(hwnd, &mut rect);
+        let w = (rect.right - rect.left) as u32;
+        let h = (rect.bottom - rect.top) as u32;
+
+        // If size is 0, don't create target yet
+        if w == 0 || h == 0 {
+            return;
+        }
+
+        let dpi = GetDpiForWindow(hwnd) as f32;
+        let props = D2D1_RENDER_TARGET_PROPERTIES {
+            pixelFormat: D2D1_PIXEL_FORMAT {
+                format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+            },
+            dpiX: dpi,
+            dpiY: dpi,
+            ..Default::default()
+        };
+        let hwnd_props = D2D1_HWND_RENDER_TARGET_PROPERTIES {
+            hwnd,
+            pixelSize: D2D_SIZE_U {
+                width: w,
+                height: h,
+            },
+            presentOptions: D2D1_PRESENT_OPTIONS_NONE,
+        };
+
+        if let Ok(target) = factory.CreateHwndRenderTarget(&props, &hwnd_props) {
+            DROPDOWN_RENDER_TARGET = Some(target);
+        }
+    } else {
+        // Check if resize is needed
+        if let Some(target) = &DROPDOWN_RENDER_TARGET {
+            let mut rect = RECT::default();
+            GetWindowRect(hwnd, &mut rect);
+            let w = (rect.right - rect.left) as u32;
+            let h = (rect.bottom - rect.top) as u32;
+
+            let size = target.GetPixelSize();
+            if size.width != w || size.height != h {
+                let res = target.Resize(&windows::Win32::Graphics::Direct2D::Common::D2D_SIZE_U {
+                    width: w,
+                    height: h,
+                });
+                if res.is_ok() {
+                    DROPDOWN_BRUSHES = None; // Recreate brushes for new size
+                } else {
+                    DROPDOWN_RENDER_TARGET = None;
+                    DROPDOWN_BRUSHES = None;
+                }
+            }
+        }
+    }
+
+    if DROPDOWN_BRUSHES.is_some() {
+        return;
+    }
+
+    let Some(target) = &DROPDOWN_RENDER_TARGET else {
+        return;
+    };
+    let rt: ID2D1RenderTarget = target.cast().unwrap();
+
+    // Create brushes
+    let is_dark = is_dark_mode();
+
+    let text_col = if is_dark { 1.0 } else { 0.0 };
+    let white = rt
+        .CreateSolidColorBrush(
+            &D2D1_COLOR_F {
+                r: text_col,
+                g: text_col,
+                b: text_col,
+                a: 1.0,
+            },
+            None,
+        )
+        .unwrap();
+
+    let gray_col = if is_dark { 0.6 } else { 0.4 };
+    let gray = rt
+        .CreateSolidColorBrush(
+            &D2D1_COLOR_F {
+                r: gray_col,
+                g: gray_col,
+                b: gray_col,
+                a: 0.5,
+            },
+            None,
+        )
+        .unwrap();
+
+    let input_bg_col = 0.0; // Black base for both to ensure darkness
+    let input_bg_alpha = if is_dark { 0.1 } else { 0.1 };
+    let input_bg = rt
+        .CreateSolidColorBrush(
+            &D2D1_COLOR_F {
+                r: input_bg_col,
+                g: input_bg_col,
+                b: input_bg_col,
+                a: input_bg_alpha,
+            },
+            None,
+        )
+        .unwrap();
+
+    let btn_bg_col = if is_dark { 0.2 } else { 0.95 };
+    let btn_bg = rt
+        .CreateSolidColorBrush(
+            &D2D1_COLOR_F {
+                r: btn_bg_col,
+                g: btn_bg_col,
+                b: btn_bg_col,
+                a: 0.9,
+            },
+            None,
+        )
+        .unwrap();
+
+    let btn_hover_col = if is_dark { 0.35 } else { 0.8 };
+    let btn_hover = rt
+        .CreateSolidColorBrush(
+            &D2D1_COLOR_F {
+                r: btn_hover_col,
+                g: btn_hover_col,
+                b: btn_hover_col,
+                a: 0.95,
+            },
+            None,
+        )
+        .unwrap();
+
+    let close_hover = rt
+        .CreateSolidColorBrush(
+            &D2D1_COLOR_F {
+                r: 0.769,
+                g: 0.169,
+                b: 0.11,
+                a: 1.0,
+            },
+            None,
+        )
+        .unwrap();
+
+    // Init accent brushes for dropdown (even if not used for buttons, kept for consistency or future use)
+    // Actually dropdown uses Brushes struct too, so it needs these fields.
+    // For dropdown we probably don't use accent strongly, but let's just use defaults or same logic.
+    let (ar, ag, ab) = get_accent_color_values();
+    let accent = rt
+        .CreateSolidColorBrush(
+            &D2D1_COLOR_F {
+                r: ar,
+                g: ag,
+                b: ab,
+                a: 0.9,
+            },
+            None,
+        )
+        .unwrap();
+    let accent_hover = rt
+        .CreateSolidColorBrush(
+            &D2D1_COLOR_F {
+                r: ar,
+                g: ag,
+                b: ab,
+                a: 1.0,
+            },
+            None,
+        )
+        .unwrap();
+
+    DROPDOWN_BRUSHES = Some(Brushes {
+        placeholder: rt
+            .CreateSolidColorBrush(
+                &D2D1_COLOR_F {
+                    r: text_col,
+                    g: text_col,
+                    b: text_col,
+                    a: 0.4,
+                },
+                None,
+            )
+            .unwrap(),
+        white,
+        gray,
+        input_bg,
+        btn_bg,
+        btn_hover,
+        close_hover,
+        accent,
+        accent_hover,
+        selection: rt
+            .CreateSolidColorBrush(
+                &D2D1_COLOR_F {
+                    r: ar,
+                    g: ag,
+                    b: ab,
+                    a: 0.4,
+                },
+                None,
+            )
+            .unwrap(),
+        input_border: rt
+            .CreateSolidColorBrush(
+                &D2D1_COLOR_F {
+                    r: gray_col,
+                    g: gray_col,
+                    b: gray_col,
+                    a: 0.1, // Extra subtle
+                },
+                None,
+            )
+            .unwrap(),
+    });
+}
+
+unsafe fn ensure_resources(hwnd: HWND) {
+    if RENDER_TARGET.is_none() {
+        let Some(factory) = &D2D_FACTORY else { return };
+        let Some(_dwrite) = &DWRITE_FACTORY else {
+            return;
+        };
+
+        let dpi = GetDpiForWindow(hwnd) as f32;
+        let props = D2D1_RENDER_TARGET_PROPERTIES {
+            pixelFormat: D2D1_PIXEL_FORMAT {
+                format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+            },
+            dpiX: dpi,
+            dpiY: dpi,
+            ..Default::default()
+        };
+        let hwnd_props = D2D1_HWND_RENDER_TARGET_PROPERTIES {
+            hwnd,
+            pixelSize: D2D_SIZE_U {
+                width: WIN_W as u32,
+                height: WIN_H as u32,
+            },
+            presentOptions: D2D1_PRESENT_OPTIONS_NONE,
+        };
+
+        if let Ok(target) = factory.CreateHwndRenderTarget(&props, &hwnd_props) {
+            RENDER_TARGET = Some(target);
+        }
+    }
+
+    if BRUSHES.is_some() && FONTS.is_some() {
+        return;
+    }
+
+    let Some(target) = &RENDER_TARGET else { return };
+    let rt: ID2D1RenderTarget = target.cast().unwrap();
+
+    // Create brushes
+    let is_dark = is_dark_mode();
+
+    let text_col = if is_dark { 1.0 } else { 0.0 };
+    let white = rt
+        .CreateSolidColorBrush(
+            &D2D1_COLOR_F {
+                r: text_col,
+                g: text_col,
+                b: text_col,
+                a: 1.0,
+            },
+            None,
+        )
+        .unwrap();
+
+    let gray_col = if is_dark { 0.6 } else { 0.4 };
+    let gray = rt
+        .CreateSolidColorBrush(
+            &D2D1_COLOR_F {
+                r: gray_col,
+                g: gray_col,
+                b: gray_col,
+                a: 0.5,
+            },
+            None,
+        )
+        .unwrap();
+
+    let input_bg_col = if is_dark { 0.1 } else { 0.9 };
+    let input_bg = rt
+        .CreateSolidColorBrush(
+            &D2D1_COLOR_F {
+                r: input_bg_col,
+                g: input_bg_col,
+                b: input_bg_col,
+                a: 0.15,
+            },
+            None,
+        )
+        .unwrap();
+
+    let btn_bg_col = if is_dark { 0.2 } else { 0.94 }; // Soft gray resting
+    let btn_bg = rt
+        .CreateSolidColorBrush(
+            &D2D1_COLOR_F {
+                r: btn_bg_col,
+                g: btn_bg_col,
+                b: btn_bg_col,
+                a: 0.9,
+            },
+            None,
+        )
+        .unwrap();
+
+    let btn_hover_col = if is_dark { 0.35 } else { 0.88 }; // Deeper gray hover
+    let btn_hover = rt
+        .CreateSolidColorBrush(
+            &D2D1_COLOR_F {
+                r: btn_hover_col,
+                g: btn_hover_col,
+                b: btn_hover_col,
+                a: 0.95,
+            },
+            None,
+        )
+        .unwrap();
+    let close_hover = rt
+        .CreateSolidColorBrush(
+            &D2D1_COLOR_F {
+                r: 0.769,
+                g: 0.169,
+                b: 0.11,
+                a: 1.0,
+            },
+            None,
+        )
+        .unwrap();
+
+    let (ar, ag, ab) = get_accent_color_values();
+    let accent = rt
+        .CreateSolidColorBrush(
+            &D2D1_COLOR_F {
+                r: ar,
+                g: ag,
+                b: ab,
+                a: 0.9,
+            },
+            None,
+        )
+        .unwrap();
+    let accent_hover = rt
+        .CreateSolidColorBrush(
+            &D2D1_COLOR_F {
+                r: ar,
+                g: ag,
+                b: ab,
+                a: 1.0,
+            },
+            None,
+        )
+        .unwrap();
+
+    BRUSHES = Some(Brushes {
+        placeholder: rt
+            .CreateSolidColorBrush(
+                &D2D1_COLOR_F {
+                    r: text_col,
+                    g: text_col,
+                    b: text_col,
+                    a: 0.4,
+                },
+                None,
+            )
+            .unwrap(),
+        white,
+        gray,
+        input_bg,
+        btn_bg,
+        btn_hover,
+        close_hover,
+        accent,
+        accent_hover,
+        selection: rt
+            .CreateSolidColorBrush(
+                &D2D1_COLOR_F {
+                    r: ar,
+                    g: ag,
+                    b: ab,
+                    a: 0.4,
+                },
+                None,
+            )
+            .unwrap(),
+        input_border: rt
+            .CreateSolidColorBrush(
+                &D2D1_COLOR_F {
+                    r: gray_col,
+                    g: gray_col,
+                    b: gray_col,
+                    a: 0.15, // Extra subtle
+                },
+                None,
+            )
+            .unwrap(),
+    });
+
+    if WIC_FACTORY.is_none() {
+        WIC_FACTORY = CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER).ok();
+    }
+
+    if APP_ICON_BITMAP.is_none() {
+        if let Some(wic_factory) = &WIC_FACTORY {
+            // Load Icon
+            let icon_handle = LoadImageW(
+                GetModuleHandleW(None).unwrap(),
+                w!("icon.ico"),
+                IMAGE_ICON,
+                32,
+                32,
+                LR_DEFAULTCOLOR,
+            );
+
+            if let Ok(icon_handle) = icon_handle {
+                if let Ok(bmp) = wic_factory.CreateBitmapFromHICON(HICON(icon_handle.0 as _)) {
+                    // Check if rt supports creation
+                    if let Ok(converter) = wic_factory.CreateFormatConverter() {
+                        converter
+                            .Initialize(
+                                &bmp,
+                                &GUID_WICPixelFormat32bppPBGRA,
+                                WICBitmapDitherTypeNone,
+                                None,
+                                0.0,
+                                WICBitmapPaletteTypeMedianCut,
+                            )
+                            .ok();
+
+                        if let Ok(d2d_bmp) = rt.CreateBitmapFromWicBitmap(&converter, None) {
+                            APP_ICON_BITMAP = Some(d2d_bmp);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    ensure_fonts();
     RENDER_TARGET = Some(target.clone());
 }
 
@@ -2005,12 +2363,35 @@ unsafe fn paint() {
             bottom: INPUT_Y + INPUT_H - 8.0,
         };
 
-        let text_u16: Vec<u16> = buf.encode_utf16().collect();
-        let brush = if buf.is_empty() { &b.gray } else { &b.white };
+        let brush = &b.white;
 
-        if !buf.is_empty() {
+        if buf.is_empty() {
+            // Draw placeholder hint
+            let hint = "Search or run a command...";
+            let hint_u16: Vec<u16> = hint.encode_utf16().collect();
+            if let Some(dwrite) = &DWRITE_FACTORY {
+                if let Ok(layout) = dwrite.CreateTextLayout(
+                    &hint_u16,
+                    &f.button,
+                    text_rect.right - text_rect.left,
+                    text_rect.bottom - text_rect.top,
+                ) {
+                    layout.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING).ok();
+                    rt.DrawTextLayout(
+                        D2D_POINT_2F {
+                            x: text_rect.left,
+                            y: text_rect.top,
+                        },
+                        &layout,
+                        &b.placeholder,
+                        D2D1_DRAW_TEXT_OPTIONS_NONE,
+                    );
+                }
+            }
+        } else {
             // Use TextLayout for selection highlighting and text rendering
             if let Some(dwrite) = &DWRITE_FACTORY {
+                let text_u16: Vec<u16> = buf.encode_utf16().collect();
                 if let Ok(layout) = dwrite.CreateTextLayout(
                     &text_u16,
                     &f.button,
@@ -2073,6 +2454,7 @@ unsafe fn paint() {
             } else {
                 // Use DirectWrite TextLayout to get actual text width
                 if let Some(dwrite) = &DWRITE_FACTORY {
+                    let text_u16: Vec<u16> = buf.encode_utf16().collect();
                     if let Ok(layout) = dwrite.CreateTextLayout(
                         &text_u16,
                         &f.button,
@@ -2081,18 +2463,23 @@ unsafe fn paint() {
                     ) {
                         // Set left alignment for proper cursor positioning
                         layout.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING).ok();
+
+                        // Query actual caret position from standard edit control
+                        let mut start: u32 = 0;
+                        let mut end: u32 = 0;
+                        SendMessageW(
+                            H_EDIT,
+                            EM_GETSEL,
+                            WPARAM(&mut start as *mut _ as usize),
+                            LPARAM(&mut end as *mut _ as isize),
+                        );
+
                         let mut x: f32 = 0.0;
                         let mut y: f32 = 0.0;
                         let mut metrics: DWRITE_HIT_TEST_METRICS = std::mem::zeroed();
-                        // Get position after last character
+                        // Get position at the caret (end of selection)
                         layout
-                            .HitTestTextPosition(
-                                buf.chars().count() as u32,
-                                false,
-                                &mut x,
-                                &mut y,
-                                &mut metrics,
-                            )
+                            .HitTestTextPosition(end, false, &mut x, &mut y, &mut metrics)
                             .ok();
                         text_rect.left + x
                     } else {
@@ -2272,7 +2659,11 @@ unsafe fn show_tooltip(msg: &str) {
     // Show without activating
     ShowWindow(H_TOOLTIP, SW_SHOWNOACTIVATE);
 
-    // Auto-close after 8 seconds
+    TOOLTIP_ANIM_START = Some(Instant::now());
+    TOOLTIP_ANIM_TYPE = AnimType::Entering;
+    SetTimer(main_hwnd, 3, 16, None);
+
+    // Auto-close timer
     SetTimer(H_TOOLTIP, 2, 8000, None);
 
     // Highlight text in input box
@@ -2284,15 +2675,19 @@ unsafe extern "system" fn tooltip_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: 
     match msg {
         WM_TIMER => {
             if wp.0 == 2 {
-                DestroyWindow(hwnd);
-                H_TOOLTIP = HWND(0);
+                let main_hwnd = FindWindowW(w!("SwiftRunClass"), w!("SwiftRun"));
+                TOOLTIP_ANIM_START = Some(Instant::now());
+                TOOLTIP_ANIM_TYPE = AnimType::Exiting;
+                SetTimer(main_hwnd, 3, 16, None);
             }
             LRESULT(0)
         }
         WM_LBUTTONDOWN => {
             // Click to dismiss
-            DestroyWindow(hwnd);
-            H_TOOLTIP = HWND(0);
+            let main_hwnd = FindWindowW(w!("SwiftRunClass"), w!("SwiftRun"));
+            TOOLTIP_ANIM_START = Some(Instant::now());
+            TOOLTIP_ANIM_TYPE = AnimType::Exiting;
+            SetTimer(main_hwnd, 3, 16, None);
             LRESULT(0)
         }
         WM_PAINT => {
@@ -2328,6 +2723,31 @@ unsafe extern "system" fn tooltip_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: 
                     // Re-use target or create new (ephemeral is ok for tooltip)
                     if let Ok(target) = factory.CreateHwndRenderTarget(&props, &hwnd_props) {
                         target.BeginDraw();
+
+                        // Animation Logic
+                        let mut alpha = 1.0;
+                        let mut scale = 1.0;
+                        let mut y_off = 0.0;
+                        if let Some(start) = TOOLTIP_ANIM_START {
+                            let elapsed = start.elapsed().as_millis();
+                            let progress =
+                                (elapsed as f32 / ANIM_TOOLTIP_DURATION_MS as f32).min(1.0);
+                            match TOOLTIP_ANIM_TYPE {
+                                AnimType::Entering => {
+                                    let eased = ease_out_back(progress);
+                                    alpha = progress.min(1.0); // Quick fade
+                                    scale = 0.8 + 0.2 * eased;
+                                    y_off = 5.0 * (1.0 - eased);
+                                }
+                                AnimType::Exiting => {
+                                    alpha = 1.0 - progress;
+                                    scale = 1.0 - 0.1 * progress;
+                                    y_off = -5.0 * progress;
+                                }
+                                _ => {}
+                            }
+                        }
+
                         target.Clear(Some(&D2D1_COLOR_F {
                             r: 0.0,
                             g: 0.0,
@@ -2335,13 +2755,47 @@ unsafe extern "system" fn tooltip_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: 
                             a: 0.0,
                         }));
 
-                        // Draw Dark Gray Background
+                        // Transformation for Pop effect
+                        let mid_x = w as f32 / 2.0;
+                        let mid_y = h as f32 / 2.0;
+                        target.SetTransform(
+                            &(Matrix3x2::translation(-mid_x, -mid_y)
+                                * Matrix3x2 {
+                                    M11: scale,
+                                    M12: 0.0,
+                                    M21: 0.0,
+                                    M22: scale,
+                                    M31: 0.0,
+                                    M32: 0.0,
+                                }
+                                * Matrix3x2::translation(mid_x, mid_y + y_off)),
+                        );
+
+                        let layer_params = D2D1_LAYER_PARAMETERS {
+                            contentBounds: D2D_RECT_F {
+                                left: 0.0,
+                                top: 0.0,
+                                right: w as f32,
+                                bottom: h as f32,
+                            },
+                            opacity: alpha,
+                            ..Default::default()
+                        };
+                        if let Ok(layer) = target.CreateLayer(None) {
+                            target.PushLayer(&layer_params, &layer);
+                        }
+
+                        let is_dark = is_dark_mode();
+                        let bg_col = if is_dark { 0.1 } else { 1.0 };
+                        let bg_alpha = if is_dark { 0.55 } else { 0.95 };
+
+                        // Draw Background
                         if let Ok(bg_brush) = target.CreateSolidColorBrush(
                             &D2D1_COLOR_F {
-                                r: 0.1,
-                                g: 0.1,
-                                b: 0.1,
-                                a: 0.55, // Even more transparent
+                                r: bg_col,
+                                g: bg_col,
+                                b: bg_col,
+                                a: bg_alpha,
                             },
                             None,
                         ) {
@@ -2353,19 +2807,20 @@ unsafe extern "system" fn tooltip_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: 
                                         right: w as f32,
                                         bottom: h as f32,
                                     },
-                                    radiusX: 4.0, // Matches RoundSmall better
+                                    radiusX: 4.0,
                                     radiusY: 4.0,
                                 },
                                 &bg_brush,
                             );
                         }
 
-                        // Text
+                        // Text Color
+                        let text_col = if is_dark { 1.0 } else { 0.2 }; // Dark gray #323130 is approx 0.2 in RGB
                         if let Ok(text_brush) = target.CreateSolidColorBrush(
                             &D2D1_COLOR_F {
-                                r: 1.0,
-                                g: 1.0,
-                                b: 1.0,
+                                r: text_col,
+                                g: text_col,
+                                b: text_col,
                                 a: 1.0,
                             },
                             None,
@@ -2400,6 +2855,9 @@ unsafe extern "system" fn tooltip_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: 
                                 }
                             }
                         }
+
+                        target.PopLayer();
+                        target.SetTransform(&Matrix3x2::identity());
 
                         target.EndDraw(None, None).ok();
                     }

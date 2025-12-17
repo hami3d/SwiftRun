@@ -1,0 +1,21 @@
+   Compiling swift_run v0.1.0 (C:\Users\HamidR\Documents\swift_run)
+error[E0432]: unresolved import `windows::Win32::Graphics::Direct2D::Common::D2D_MATRIX_3X2_F`
+  --> src\main.rs:15:77
+   |
+15 |             D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_MATRIX_3X2_F,
+   |                                                                             ^^^^^^^^^^^^^^^^
+   |                                                                             |
+   |                                                                             no `D2D_MATRIX_3X2_F` in `Windows::Win32::Graphics::Direct2D::Common`
+   |                                                                             help: a similar name exists in the module: `D2D_MATRIX_4X3_F`
+
+warning: unused import: `ID2D1Layer`
+  --> src\main.rs:18:78
+   |
+18 |         D2D1CreateFactory, ID2D1Bitmap, ID2D1Factory, ID2D1HwndRenderTarget, ID2D1Layer,
+   |                                                                              ^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+For more information about this error, try `rustc --explain E0432`.
+warning: `swift_run` (bin "swift_run") generated 1 warning
+error: could not compile `swift_run` (bin "swift_run") due to 1 previous error; 1 warning emitted
