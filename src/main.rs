@@ -720,8 +720,16 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                     }
                     HoverId::Ok => run_command(),
                     HoverId::Cancel => PostQuitMessage(0),
-                    HoverId::None | HoverId::Input => {
+                    HoverId::Input => {
                         SetFocus(H_EDIT);
+                    }
+                    HoverId::None => {
+                        SetFocus(H_EDIT);
+                        if SHOW_DROPDOWN {
+                            SHOW_DROPDOWN = false;
+                            ShowWindow(H_DROPDOWN, SW_HIDE);
+                            InvalidateRect(hwnd, None, BOOL(0));
+                        }
                     }
                     HoverId::Dropdown => {
                         SHOW_DROPDOWN = !SHOW_DROPDOWN;
@@ -806,6 +814,15 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             WM_DESTROY => {
                 PostQuitMessage(0);
                 LRESULT(0)
+            }
+
+            WM_NCLBUTTONDOWN => {
+                if SHOW_DROPDOWN {
+                    SHOW_DROPDOWN = false;
+                    ShowWindow(H_DROPDOWN, SW_HIDE);
+                    InvalidateRect(hwnd, None, BOOL(0));
+                }
+                DefWindowProcW(hwnd, msg, wp, lp)
             }
 
             _ => DefWindowProcW(hwnd, msg, wp, lp),
@@ -1396,8 +1413,8 @@ unsafe fn ensure_resources(hwnd: HWND) {
                 GetModuleHandleW(None).unwrap(),
                 w!("icon.ico"),
                 IMAGE_ICON,
-                16,
-                16,
+                32,
+                32,
                 LR_DEFAULTCOLOR,
             );
 
@@ -1589,15 +1606,15 @@ unsafe fn paint() {
     );
 
     // Title
-    let icon_size = 16.0;
+    let icon_size = 24.0;
     if let Some(bitmap) = &APP_ICON_BITMAP {
         rt.DrawBitmap(
             bitmap,
             Some(&D2D_RECT_F {
                 left: MARGIN,
-                top: TITLE_Y + 2.0, // Center vertically with text
+                top: TITLE_Y - 2.0, // Center vertically with text (24px icon)
                 right: MARGIN + icon_size,
-                bottom: TITLE_Y + 2.0 + icon_size,
+                bottom: TITLE_Y - 2.0 + icon_size,
             }),
             1.0,
             D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
