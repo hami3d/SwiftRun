@@ -1,0 +1,18 @@
+   Compiling swift_run v0.1.0 (C:\Users\HamidR\Documents\swift_run)
+error[E0425]: cannot find function, tuple struct or tuple variant `MessageBeep` in this scope
+    --> src\main.rs:1978:5
+     |
+1978 |       MessageBeep(MB_ICONHAND);
+     |       ^^^^^^^^^^^ help: a function with a similar name exists: `MessageBoxA`
+     |
+    ::: C:\Users\HamidR\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\windows-0.48.0\src\Windows\Win32\UI\WindowsAndMessaging\mod.rs:2509:1
+     |
+2509 | / pub unsafe fn MessageBoxA<P0, P1, P2>(hwnd: P0, lptext: P1, lpcaption: P2, utype: MESSAGEBOX_STYLE) -> MESSAGEBOX_RESULT
+2510 | | where
+2511 | |     P0: ::windows::core::IntoParam<super::super::Foundation::HWND>,
+2512 | |     P1: ::windows::core::IntoParam<::windows::core::PCSTR>,
+2513 | |     P2: ::windows::core::IntoParam<::windows::core::PCSTR>,
+     | |___________________________________________________________- similarly named function `MessageBoxA` defined here
+
+For more information about this error, try `rustc --explain E0425`.
+error: could not compile `swift_run` (bin "swift_run") due to 1 previous error

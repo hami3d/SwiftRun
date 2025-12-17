@@ -5,6 +5,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::thread;
 use windows::{
     core::*,
     Win32::Foundation::*,
@@ -25,13 +26,15 @@ use windows::{
     Win32::Graphics::Gdi::*,
     Win32::Graphics::Imaging::*,
     Win32::System::Com::*,
+    Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED},
+    Win32::System::Environment::ExpandEnvironmentStringsW,
     Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress},
     Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD},
     Win32::System::SystemInformation::GetTickCount,
     Win32::UI::Controls::MARGINS,
     Win32::UI::HiDpi::{GetDpiForWindow, SetProcessDpiAwareness},
-    Win32::UI::Input::KeyboardAndMouse::SetFocus,
-    Win32::UI::Shell::ShellExecuteW,
+    Win32::UI::Input::KeyboardAndMouse::{GetKeyState, SetFocus, VK_CONTROL, VK_SHIFT},
+    Win32::UI::Shell::{PathGetArgsW, ShellExecuteW},
     Win32::UI::WindowsAndMessaging::*,
 };
 
@@ -45,6 +48,11 @@ static mut SCROLL_OFFSET: usize = 0;
 static mut H_DROPDOWN: HWND = HWND(0);
 static mut DROPDOWN_RENDER_TARGET: Option<ID2D1HwndRenderTarget> = None;
 static mut HOVER_DROPDOWN: Option<usize> = None;
+
+// Error Dialog State
+// Tooltip state
+static mut TOOLTIP_TEXT: String = String::new();
+static mut H_TOOLTIP: HWND = HWND(0);
 
 // Static strings caching
 static STR_TITLE: std::sync::OnceLock<Vec<u16>> = std::sync::OnceLock::new();
@@ -410,6 +418,19 @@ fn main() -> Result<()> {
         };
         RegisterClassW(&wc_dropdown);
 
+        // Register Tooltip Class
+        let tooltip_class_name = w!("SwiftRunTooltip");
+        let wc_tooltip = WNDCLASSW {
+            hCursor: LoadCursorW(None, IDC_ARROW).unwrap(),
+            hInstance: instance,
+            lpszClassName: tooltip_class_name,
+            lpfnWndProc: Some(tooltip_wndproc),
+            hbrBackground: HBRUSH::default(),
+            hIcon: h_icon,
+            ..Default::default()
+        };
+        RegisterClassW(&wc_tooltip);
+
         // Create Main Window
         let hwnd = CreateWindowExW(
             WINDOW_EX_STYLE::default(),
@@ -561,23 +582,86 @@ fn hit_test(x: i32, y: i32, w: f32, _h: f32, input_empty: bool) -> HoverId {
 
 fn run_command() {
     unsafe {
+        let mut input_str = String::new();
         if let Ok(buf) = INPUT_BUFFER.lock() {
             if !buf.is_empty() {
-                let cmd_str = buf.clone();
-                save_history(&cmd_str);
-
-                let cmd: Vec<u16> = buf.encode_utf16().chain(std::iter::once(0)).collect();
-                ShellExecuteW(
-                    None,
-                    w!("open"),
-                    PCWSTR(cmd.as_ptr()),
-                    None,
-                    None,
-                    SW_SHOWNORMAL,
-                );
+                input_str = buf.clone();
+                save_history(&input_str);
             }
         }
-        PostQuitMessage(0);
+
+        if input_str.is_empty() {
+            return;
+        }
+
+        let main_hwnd = FindWindowW(w!("SwiftRunClass"), w!("SwiftRun"));
+        // Hide immediately to prevent freeze feeling
+        ShowWindow(main_hwnd, SW_HIDE);
+
+        // 1. Check for Protocol/URL (regex-like check)
+        // If it looks like a URL, let ShellExecute handle it entirely.
+        let is_url = input_str.starts_with("http")
+            || input_str.starts_with("www")
+            || input_str.contains("://");
+
+        thread::spawn(move || {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+
+            let mut file_path = input_str.clone();
+            let mut params = String::new();
+            let mut verb = PCWSTR::null();
+            let mut admin_mode = false;
+
+            if !is_url {
+                if GetKeyState(VK_CONTROL.0 as i32) < 0 && GetKeyState(VK_SHIFT.0 as i32) < 0 {
+                    // Admin mode
+                    admin_mode = true;
+                    verb = w!("runas");
+                }
+
+                // Parse command vs args
+                // (Simplified logic for thread: just run what we parsed)
+                // Actually we need to parse inside thread or before.
+                // Let's parse here for simplicity or just run basic split.
+                // Re-using logic:
+                if let Some(idx) = input_str.find(' ') {
+                    file_path = input_str[..idx].to_string();
+                    params = input_str[idx + 1..].to_string();
+                }
+            }
+
+            // Secure Quote Handling
+            if params.is_empty() && file_path.contains(' ') && !file_path.starts_with('"') {
+                file_path = format!("\"{}\"", file_path);
+            }
+
+            // Execute
+            let file_u16: Vec<u16> = file_path.encode_utf16().chain(std::iter::once(0)).collect();
+            let params_u16: Vec<u16> = params.encode_utf16().chain(std::iter::once(0)).collect();
+
+            let res = ShellExecuteW(
+                None,
+                verb,
+                PCWSTR(file_u16.as_ptr()),
+                if params.is_empty() {
+                    PCWSTR::null()
+                } else {
+                    PCWSTR(params_u16.as_ptr())
+                },
+                None,
+                SW_SHOWNORMAL,
+            );
+
+            CoUninitialize();
+
+            if (res.0 as isize) > 32 {
+                PostMessageW(main_hwnd, WM_APP_CLOSE, WPARAM(0), LPARAM(0));
+            } else {
+                // Determine if we should show error
+                // Just post error
+                PostMessageW(main_hwnd, WM_APP_ERROR, WPARAM(0), LPARAM(0));
+            }
+        });
     }
 }
 
@@ -593,6 +677,23 @@ unsafe fn get_dpi_scale(hwnd: HWND) -> f32 {
 extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
         match msg {
+            WM_APP_RUN_COMMAND => {
+                run_command();
+                LRESULT(0)
+            }
+            WM_APP_CLOSE => {
+                PostQuitMessage(0);
+                LRESULT(0)
+            }
+            WM_APP_ERROR => {
+                ShowWindow(hwnd, SW_SHOW);
+                // We can't easily get the exact string back from thread without logic,
+                // but we can just show a generic error or read from input buffer again.
+                if let Ok(buf) = INPUT_BUFFER.lock() {
+                    show_tooltip(&format!("Error: Cannot run '{}'.", buf));
+                }
+                LRESULT(0)
+            }
             WM_SIZE => {
                 if let Some(target) = RENDER_TARGET.as_ref() {
                     let size = D2D_SIZE_U {
@@ -831,6 +932,9 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
 }
 
 const WM_MOUSELEAVE: u32 = 0x02A3;
+const WM_APP_RUN_COMMAND: u32 = 1025; // WM_USER + 1
+const WM_APP_CLOSE: u32 = 1026;
+const WM_APP_ERROR: u32 = 1027;
 
 unsafe extern "system" fn dropdown_wndproc(
     hwnd: HWND,
@@ -872,107 +976,109 @@ unsafe extern "system" fn dropdown_wndproc(
             if let Some(target) = &DROPDOWN_RENDER_TARGET {
                 if let Some(b) = &DROPDOWN_BRUSHES {
                     if let Some(f) = &FONTS {
-                        let rt: ID2D1RenderTarget = target.cast().unwrap();
-                        rt.SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-                        target.BeginDraw();
-                        target.Clear(Some(&D2D1_COLOR_F {
-                            r: 0.0,
-                            g: 0.0,
-                            b: 0.0,
-                            a: 0.0,
-                        }));
+                        if let Ok(rt) = target.cast::<ID2D1RenderTarget>() {
+                            rt.SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                            target.BeginDraw();
+                            target.Clear(Some(&D2D1_COLOR_F {
+                                r: 0.0,
+                                g: 0.0,
+                                b: 0.0,
+                                a: 0.0,
+                            }));
 
-                        // Draw background
-                        let size = target.GetSize();
-                        let w = size.width;
-                        let h = size.height;
+                            // Draw background
+                            let size = target.GetSize();
+                            let w = size.width;
+                            let h = size.height;
 
-                        rt.FillRoundedRectangle(
-                            &D2D1_ROUNDED_RECT {
-                                rect: D2D_RECT_F {
-                                    left: 0.0,
-                                    top: 0.0,
-                                    right: w,
-                                    bottom: h,
+                            rt.FillRoundedRectangle(
+                                &D2D1_ROUNDED_RECT {
+                                    rect: D2D_RECT_F {
+                                        left: 0.0,
+                                        top: 0.0,
+                                        right: w,
+                                        bottom: h,
+                                    },
+                                    radiusX: CORNER_RADIUS,
+                                    radiusY: CORNER_RADIUS,
                                 },
-                                radiusX: CORNER_RADIUS,
-                                radiusY: CORNER_RADIUS,
-                            },
-                            &b.input_bg,
-                        );
+                                &b.input_bg,
+                            );
 
-                        if let Some(history) = HISTORY.as_ref() {
-                            for (i, item) in history.iter().skip(SCROLL_OFFSET).take(5).enumerate()
-                            {
-                                let item_y = i as f32 * ITEM_H;
+                            if let Some(history) = HISTORY.as_ref() {
+                                for (i, item) in
+                                    history.iter().skip(SCROLL_OFFSET).take(5).enumerate()
+                                {
+                                    let item_y = i as f32 * ITEM_H;
 
-                                // Adjust highlight width if scrollbar is visible
-                                let total_items = history.len();
-                                let scroll_width = if total_items > 5 { 8.0 } else { 0.0 };
+                                    // Adjust highlight width if scrollbar is visible
+                                    let total_items = history.len();
+                                    let scroll_width = if total_items > 5 { 8.0 } else { 0.0 };
 
-                                let rect = D2D_RECT_F {
-                                    left: 0.0,
-                                    top: item_y,
-                                    right: w - scroll_width,
-                                    bottom: item_y + ITEM_H,
-                                };
+                                    let rect = D2D_RECT_F {
+                                        left: 0.0,
+                                        top: item_y,
+                                        right: w - scroll_width,
+                                        bottom: item_y + ITEM_H,
+                                    };
 
-                                // Hover highlight
-                                if HOVER_DROPDOWN == Some(i) {
-                                    rt.FillRoundedRectangle(
-                                        &D2D1_ROUNDED_RECT {
-                                            rect,
-                                            radiusX: CORNER_RADIUS,
-                                            radiusY: CORNER_RADIUS,
+                                    // Hover highlight
+                                    if HOVER_DROPDOWN == Some(i) {
+                                        rt.FillRoundedRectangle(
+                                            &D2D1_ROUNDED_RECT {
+                                                rect,
+                                                radiusX: CORNER_RADIUS,
+                                                radiusY: CORNER_RADIUS,
+                                            },
+                                            &b.btn_hover,
+                                        );
+                                    }
+
+                                    // Text
+                                    let txt: Vec<u16> = item.encode_utf16().collect();
+                                    rt.DrawText(
+                                        &txt,
+                                        &f.label,
+                                        &D2D_RECT_F {
+                                            left: rect.left + 10.0,
+                                            top: rect.top,
+                                            right: rect.right - 10.0,
+                                            bottom: rect.bottom,
                                         },
-                                        &b.btn_hover,
+                                        &b.white,
+                                        D2D1_DRAW_TEXT_OPTIONS_NONE,
+                                        DWRITE_MEASURING_MODE_NATURAL,
                                     );
                                 }
 
-                                // Text
-                                let txt: Vec<u16> = item.encode_utf16().collect();
-                                rt.DrawText(
-                                    &txt,
-                                    &f.label,
-                                    &D2D_RECT_F {
-                                        left: rect.left + 10.0,
-                                        top: rect.top,
-                                        right: rect.right - 10.0,
-                                        bottom: rect.bottom,
-                                    },
-                                    &b.white,
-                                    D2D1_DRAW_TEXT_OPTIONS_NONE,
-                                    DWRITE_MEASURING_MODE_NATURAL,
-                                );
+                                // Scroll Indicator
+                                let total_items = history.len();
+                                if total_items > 5 {
+                                    let visible_items = 5.0;
+                                    let ratio = visible_items / total_items as f32;
+                                    let thumb_h = h * ratio;
+                                    let thumb_y = (SCROLL_OFFSET as f32 / total_items as f32) * h;
+
+                                    let scroll_rect = D2D_RECT_F {
+                                        left: w - 6.0,
+                                        top: thumb_y + 2.0,
+                                        right: w - 2.0,
+                                        bottom: thumb_y + thumb_h - 2.0,
+                                    };
+
+                                    rt.FillRoundedRectangle(
+                                        &D2D1_ROUNDED_RECT {
+                                            rect: scroll_rect,
+                                            radiusX: 2.0,
+                                            radiusY: 2.0,
+                                        },
+                                        &b.gray,
+                                    );
+                                }
                             }
 
-                            // Scroll Indicator
-                            let total_items = history.len();
-                            if total_items > 5 {
-                                let visible_items = 5.0;
-                                let ratio = visible_items / total_items as f32;
-                                let thumb_h = h * ratio;
-                                let thumb_y = (SCROLL_OFFSET as f32 / total_items as f32) * h;
-
-                                let scroll_rect = D2D_RECT_F {
-                                    left: w - 6.0,
-                                    top: thumb_y + 2.0,
-                                    right: w - 2.0,
-                                    bottom: thumb_y + thumb_h - 2.0,
-                                };
-
-                                rt.FillRoundedRectangle(
-                                    &D2D1_ROUNDED_RECT {
-                                        rect: scroll_rect,
-                                        radiusX: 2.0,
-                                        radiusY: 2.0,
-                                    },
-                                    &b.gray,
-                                );
-                            }
+                            target.EndDraw(None, None).ok();
                         }
-
-                        target.EndDraw(None, None).ok();
                     }
                 }
             }
@@ -1033,6 +1139,9 @@ unsafe extern "system" fn dropdown_wndproc(
                         // Close dropdown
                         SHOW_DROPDOWN = false;
                         ShowWindow(hwnd, SW_HIDE);
+
+                        // Set focus back to edit
+                        SetFocus(H_EDIT);
                     }
                 }
             }
@@ -1855,4 +1964,159 @@ unsafe fn draw_button(
         D2D1_DRAW_TEXT_OPTIONS_NONE,
         DWRITE_MEASURING_MODE_NATURAL,
     );
+}
+
+unsafe fn show_tooltip(msg: &str) {
+    if H_TOOLTIP.0 != 0 {
+        DestroyWindow(H_TOOLTIP);
+    }
+
+    TOOLTIP_TEXT = msg.to_string();
+
+    let mut main_rect = RECT::default();
+    let main_hwnd = FindWindowW(w!("SwiftRunClass"), w!("SwiftRun"));
+    GetWindowRect(main_hwnd, &mut main_rect);
+
+    // Position below input
+    let width = 400;
+    let height = 40;
+    let x = main_rect.left + (WIN_W as i32 - width) / 2;
+    let y = main_rect.top + (WIN_H as i32) - 160; // Overlay slightly or just below
+
+    let instance = GetModuleHandleW(None).unwrap();
+    H_TOOLTIP = CreateWindowExW(
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+        w!("SwiftRunTooltip"),
+        w!(""),
+        WS_POPUP | WS_VISIBLE,
+        x,
+        y,
+        width,
+        height,
+        main_hwnd,
+        None,
+        instance,
+        None,
+    );
+
+    // Rounded
+    let v: i32 = 2;
+    DwmSetWindowAttribute(H_TOOLTIP, DWMWINDOWATTRIBUTE(33), &v as *const _ as _, 4).ok();
+
+    // Auto-close after 8 seconds
+    SetTimer(H_TOOLTIP, 2, 8000, None);
+}
+
+unsafe extern "system" fn tooltip_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    match msg {
+        WM_TIMER => {
+            if wp.0 == 2 {
+                DestroyWindow(hwnd);
+                H_TOOLTIP = HWND(0);
+            }
+            LRESULT(0)
+        }
+        WM_PAINT => {
+            let mut ps = PAINTSTRUCT::default();
+            BeginPaint(hwnd, &mut ps);
+
+            if let Some(factory) = &D2D_FACTORY {
+                let mut rect = RECT::default();
+                GetClientRect(hwnd, &mut rect);
+                let w = (rect.right - rect.left) as u32;
+                let h = (rect.bottom - rect.top) as u32;
+
+                if w > 0 && h > 0 {
+                    let dpi = GetDpiForWindow(hwnd) as f32;
+                    let props = D2D1_RENDER_TARGET_PROPERTIES {
+                        pixelFormat: D2D1_PIXEL_FORMAT {
+                            format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                            alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+                        },
+                        dpiX: dpi,
+                        dpiY: dpi,
+                        ..Default::default()
+                    };
+                    let hwnd_props = D2D1_HWND_RENDER_TARGET_PROPERTIES {
+                        hwnd,
+                        pixelSize: D2D_SIZE_U {
+                            width: w,
+                            height: h,
+                        },
+                        presentOptions: D2D1_PRESENT_OPTIONS_NONE,
+                    };
+
+                    // Re-use target or create new (ephemeral is ok for tooltip)
+                    if let Ok(target) = factory.CreateHwndRenderTarget(&props, &hwnd_props) {
+                        target.BeginDraw();
+                        target.Clear(Some(&D2D1_COLOR_F {
+                            r: 0.0,
+                            g: 0.0,
+                            b: 0.0,
+                            a: 0.0,
+                        }));
+
+                        // Draw Red-ish Fluent Background
+                        if let Ok(bg_brush) = target.CreateSolidColorBrush(
+                            &D2D1_COLOR_F {
+                                r: 0.2,
+                                g: 0.0,
+                                b: 0.0,
+                                a: 0.9,
+                            },
+                            None,
+                        ) {
+                            target.FillRoundedRectangle(
+                                &D2D1_ROUNDED_RECT {
+                                    rect: D2D_RECT_F {
+                                        left: 0.0,
+                                        top: 0.0,
+                                        right: w as f32,
+                                        bottom: h as f32,
+                                    },
+                                    radiusX: 4.0,
+                                    radiusY: 4.0,
+                                },
+                                &bg_brush,
+                            );
+                        }
+
+                        // Text
+                        if let Ok(text_brush) = target.CreateSolidColorBrush(
+                            &D2D1_COLOR_F {
+                                r: 1.0,
+                                g: 1.0,
+                                b: 1.0,
+                                a: 1.0,
+                            },
+                            None,
+                        ) {
+                            if let Some(f) = &FONTS {
+                                let msg_u16 = TOOLTIP_TEXT.encode_utf16().collect::<Vec<u16>>();
+                                // Use button font for compact
+                                target.DrawText(
+                                    &msg_u16,
+                                    &f.button,
+                                    &D2D_RECT_F {
+                                        left: 10.0,
+                                        top: 0.0,
+                                        right: w as f32,
+                                        bottom: h as f32,
+                                    },
+                                    &text_brush,
+                                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                                    DWRITE_MEASURING_MODE_NATURAL,
+                                );
+                            }
+                        }
+
+                        target.EndDraw(None, None).ok();
+                    }
+                }
+            }
+            EndPaint(hwnd, &ps);
+            LRESULT(0)
+        }
+        _ => DefWindowProcW(hwnd, msg, wp, lp),
+    }
 }
