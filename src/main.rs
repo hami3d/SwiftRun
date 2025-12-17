@@ -1,4 +1,4 @@
-#![allow(static_mut_refs)]
+﻿#![allow(static_mut_refs)]
 #![allow(non_snake_case)]
 
 use std::fs::{self, OpenOptions};
@@ -27,14 +27,15 @@ use windows::{
     Win32::Graphics::Imaging::*,
     Win32::System::Com::*,
     Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED},
-    Win32::System::Environment::ExpandEnvironmentStringsW,
     Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress},
     Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD},
     Win32::System::SystemInformation::GetTickCount,
-    Win32::UI::Controls::MARGINS,
+    Win32::UI::Controls::{EM_GETSEL, EM_SETSEL, MARGINS},
     Win32::UI::HiDpi::{GetDpiForWindow, SetProcessDpiAwareness},
-    Win32::UI::Input::KeyboardAndMouse::{GetKeyState, SetFocus, VK_CONTROL, VK_SHIFT},
-    Win32::UI::Shell::{PathGetArgsW, ShellExecuteW},
+    Win32::UI::Input::KeyboardAndMouse::{
+        GetKeyState, SetFocus, VK_CONTROL, VK_DOWN, VK_RETURN, VK_SHIFT, VK_UP,
+    },
+    Win32::UI::Shell::ShellExecuteW,
     Win32::UI::WindowsAndMessaging::*,
 };
 
@@ -48,17 +49,19 @@ static mut SCROLL_OFFSET: usize = 0;
 static mut H_DROPDOWN: HWND = HWND(0);
 static mut DROPDOWN_RENDER_TARGET: Option<ID2D1HwndRenderTarget> = None;
 static mut HOVER_DROPDOWN: Option<usize> = None;
+static mut HISTORY_INDEX: isize = -1; // -1 = current input, 0 = latest history
 
 // Error Dialog State
 // Tooltip state
 static mut TOOLTIP_TEXT: String = String::new();
 static mut H_TOOLTIP: HWND = HWND(0);
 
+static mut IS_CYCLING: bool = false;
+
 // Static strings caching
 static STR_TITLE: std::sync::OnceLock<Vec<u16>> = std::sync::OnceLock::new();
 static STR_RUN: std::sync::OnceLock<Vec<u16>> = std::sync::OnceLock::new();
 static STR_CANCEL: std::sync::OnceLock<Vec<u16>> = std::sync::OnceLock::new();
-static STR_PLACEHOLDER: std::sync::OnceLock<Vec<u16>> = std::sync::OnceLock::new();
 
 fn get_str_title() -> &'static [u16] {
     STR_TITLE
@@ -73,11 +76,6 @@ fn get_str_run() -> &'static [u16] {
 fn get_str_cancel() -> &'static [u16] {
     STR_CANCEL
         .get_or_init(|| "Cancel".encode_utf16().collect())
-        .as_slice()
-}
-fn get_str_placeholder() -> &'static [u16] {
-    STR_PLACEHOLDER
-        .get_or_init(|| "Type the name of a command to run".encode_utf16().collect())
         .as_slice()
 }
 
@@ -103,9 +101,9 @@ const WIN_BTN_W: f32 = 46.0;
 // Element positions (fixed layout)
 const TITLE_Y: f32 = 8.0;
 // const DESC_Y: f32 = 38.0; // Removed unused
-const INPUT_Y: f32 = 45.0;
+const INPUT_Y: f32 = 47.0; //input text box vertical position in y axis
 const INPUT_H: f32 = 32.0;
-const BTN_Y: f32 = 95.0;
+const BTN_Y: f32 = 103.0;
 const BTN_H: f32 = 30.0;
 const BTN_W: f32 = 80.0;
 
@@ -140,13 +138,15 @@ struct Brushes {
     close_hover: ID2D1SolidColorBrush,
     accent: ID2D1SolidColorBrush,
     accent_hover: ID2D1SolidColorBrush,
+    selection: ID2D1SolidColorBrush,
+    input_border: ID2D1SolidColorBrush,
 }
 
 struct Fonts {
     title: IDWriteTextFormat,
     label: IDWriteTextFormat,
-    input: IDWriteTextFormat,
     button: IDWriteTextFormat,
+    tooltip: IDWriteTextFormat,
 }
 
 #[repr(C)]
@@ -436,7 +436,7 @@ fn main() -> Result<()> {
             WINDOW_EX_STYLE::default(),
             class_name,
             w!("SwiftRun"),
-            WS_POPUP | WS_VISIBLE,
+            WS_POPUP | WS_VISIBLE, // Removed WS_CLIPCHILDREN - D2D doesn't respect it
             x,
             y,
             WIN_W as i32,
@@ -490,12 +490,19 @@ fn main() -> Result<()> {
             0,
             0,
             0,
-            0, // Hidden (size 0)
+            0, // Size handled in WM_SIZE
             hwnd,
             HMENU(EDIT_ID as _),
             instance,
             None,
         );
+
+        // Set Font for Edit Control
+        // We'll do this in WM_SIZE or ensuring resources, or just create a stock font/system font?
+        // Ideally we use the same DirectWrite font, but Edit controls need GDI HFONT.
+        // Let's create a GDI font.
+        let hfont = CreateFontW(20, 0, 0, 0, 400, 0, 0, 0, 0, 0, 0, 0, 0, w!("Segoe UI"));
+        SendMessageW(H_EDIT, WM_SETFONT, WPARAM(hfont.0 as usize), LPARAM(1));
 
         // Init D2D
         D2D_FACTORY = D2D1CreateFactory(
@@ -513,12 +520,29 @@ fn main() -> Result<()> {
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).into() {
-            if msg.message == WM_KEYDOWN {
-                if msg.wParam.0 == 0x0D {
-                    // VK_RETURN
-                    run_command();
+            // Keyboard hooks for Edit control
+            if msg.message == WM_KEYDOWN && msg.hwnd == H_EDIT {
+                let vk = msg.wParam.0 as i32;
+                if vk == VK_UP.0 as i32 {
+                    cycle_history(-1); // Swapped: Up is now newer
+                    InvalidateRect(hwnd, None, BOOL(0)); // Repaint to show new text
                     continue;
                 }
+                if vk == VK_DOWN.0 as i32 {
+                    cycle_history(1); // Swapped: Down is now older
+                    InvalidateRect(hwnd, None, BOOL(0)); // Repaint to show new text
+                    continue;
+                }
+                if vk == VK_RETURN.0 as i32 {
+                    // Run command
+                    let main_hwnd = FindWindowW(w!("SwiftRunClass"), w!("SwiftRun"));
+                    PostMessageW(main_hwnd, WM_APP_RUN_COMMAND, WPARAM(0), LPARAM(0));
+                    continue;
+                }
+            }
+
+            // Allow standard processing
+            if msg.message == WM_KEYDOWN {
                 if msg.wParam.0 == 0x1B {
                     // VK_ESCAPE
                     PostQuitMessage(0);
@@ -610,12 +634,12 @@ fn run_command() {
             let mut file_path = input_str.clone();
             let mut params = String::new();
             let mut verb = PCWSTR::null();
-            let mut admin_mode = false;
+            let mut _admin_mode = false;
 
             if !is_url {
                 if GetKeyState(VK_CONTROL.0 as i32) < 0 && GetKeyState(VK_SHIFT.0 as i32) < 0 {
                     // Admin mode
-                    admin_mode = true;
+                    _admin_mode = true;
                     verb = w!("runas");
                 }
 
@@ -665,6 +689,68 @@ fn run_command() {
     }
 }
 
+unsafe fn cycle_history(delta: isize) {
+    let mut history_len = 0;
+    if let Some(h) = HISTORY.as_ref() {
+        history_len = h.len() as isize;
+    }
+
+    if history_len == 0 {
+        return;
+    }
+
+    // Update index
+    let new_index = HISTORY_INDEX + delta;
+
+    // Bounds check
+    if new_index < -1 {
+        // Wrap to end? Or stop? Standard is stop at -1
+        HISTORY_INDEX = -1;
+    } else if new_index >= history_len {
+        HISTORY_INDEX = history_len - 1;
+    } else {
+        HISTORY_INDEX = new_index;
+    }
+
+    let text_to_set = if HISTORY_INDEX == -1 {
+        // Restore empty? Or saved buffer?
+        // Ideally we save current input before starting cycle.
+        // For now just clear or keep.
+        String::new()
+    } else {
+        if let Some(h) = HISTORY.as_ref() {
+            // History uses insert(0), so index 0 = newest, index len-1 = oldest
+            // HISTORY_INDEX 0 = most recent, so real_index = HISTORY_INDEX directly
+            let real_index = HISTORY_INDEX;
+            if real_index >= 0 && real_index < history_len {
+                h[real_index as usize].clone()
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        }
+    };
+
+    IS_CYCLING = true;
+    // Set text
+    SetWindowTextW(
+        H_EDIT,
+        PCWSTR(
+            text_to_set
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect::<Vec<_>>()
+                .as_ptr(),
+        ),
+    );
+    // Select all
+    SendMessageW(H_EDIT, EM_SETSEL, WPARAM(0), LPARAM(-1 as isize));
+
+    // EM_SETSEL 0,-1 highlights all.
+    IS_CYCLING = false;
+}
+
 unsafe fn get_dpi_scale(hwnd: HWND) -> f32 {
     let dpi = GetDpiForWindow(hwnd);
     if dpi == 0 {
@@ -690,7 +776,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 // We can't easily get the exact string back from thread without logic,
                 // but we can just show a generic error or read from input buffer again.
                 if let Ok(buf) = INPUT_BUFFER.lock() {
-                    show_tooltip(&format!("Error: Cannot run '{}'.", buf));
+                    show_tooltip(&format!("This Command Doesn't Exist: '{}'!", buf));
                 }
                 LRESULT(0)
             }
@@ -702,6 +788,18 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                     };
                     target.Resize(&size).ok();
                 }
+
+                // Resize Edit Control
+                SetWindowPos(
+                    H_EDIT,
+                    HWND_TOP,
+                    -10000, // Move off-screen - Edit control is hidden, only used for input handling
+                    -10000,
+                    10,
+                    10,
+                    SWP_NOZORDER,
+                );
+
                 InvalidateRect(hwnd, None, BOOL(0));
                 LRESULT(0)
             }
@@ -731,6 +829,10 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                         ShowWindow(H_DROPDOWN, SW_HIDE);
                         InvalidateRect(hwnd, None, BOOL(0));
                     }
+                } else {
+                    // Activated
+                    SetFocus(H_EDIT);
+                    SendMessageW(H_EDIT, EM_SETSEL, WPARAM(0), LPARAM(-1 as isize));
                 }
                 LRESULT(0)
             }
@@ -762,6 +864,54 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                     LRESULT(1)
                 } else {
                     DefWindowProcW(hwnd, msg, wp, lp)
+                }
+            }
+
+            WM_CTLCOLOREDIT => {
+                let hdc = HDC(wp.0 as _);
+                let is_dark = is_dark_mode();
+
+                // Set text color
+                let text_col = if is_dark { 0x00FFFFFF } else { 0x00000000 };
+                SetTextColor(hdc, COLORREF(text_col));
+
+                // Return generic background brush?
+                // Actually if we want transparent background (acrylic), Edit controls don't support true transparency well.
+                // We fake it by returning a brush that matches the acrylic tint?
+                // Or we just use a solid dark/light background for the box.
+                // User asked for "Highlight visible... like text editor".
+                // Solid background is safer for Edit control readability.
+                // Let's use a solid brush matching the theme.
+
+                // For now, let's use GetStockObject(NULL_BRUSH) to see if we can get transparency?
+                // Often produces artifacts.
+                // Better: CreateSolidBrush. To avoid leaking, store it?
+                // Creating leaky brush for now (optimization later) or use system colors.
+
+                let _bg_col = if is_dark { 0x00202020 } else { 0x00F3F3F3 }; // BGR
+                                                                             // SetBkColor(hdc, COLORREF(bg_col)); // Set text background
+
+                // Actually, let's just let it use default system logic?
+                // Or simple:
+                // If Dark: Text White, BG Black.
+                if is_dark {
+                    SetTextColor(hdc, COLORREF(0x00FFFFFF));
+                    SetBkColor(hdc, COLORREF(0x002C2C2C)); // Slightly lighter than pure black
+                    static mut DARK_BRUSH: HBRUSH = HBRUSH(0);
+                    if DARK_BRUSH.0 == 0 {
+                        DARK_BRUSH = CreateSolidBrush(COLORREF(0x002C2C2C));
+                    }
+                    LRESULT(DARK_BRUSH.0 as isize)
+                } else {
+                    // Light mode defaults usually fine?
+                    // Ensure text is black.
+                    SetTextColor(hdc, COLORREF(0x00000000));
+                    SetBkColor(hdc, COLORREF(0x00FFFFFF));
+                    static mut LIGHT_BRUSH: HBRUSH = HBRUSH(0);
+                    if LIGHT_BRUSH.0 == 0 {
+                        LIGHT_BRUSH = CreateSolidBrush(COLORREF(0x00FFFFFF));
+                    }
+                    LRESULT(LIGHT_BRUSH.0 as isize)
                 }
             }
 
@@ -802,6 +952,12 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             }
 
             WM_LBUTTONDOWN => {
+                // Dismiss tooltip if visible
+                if H_TOOLTIP.0 != 0 {
+                    DestroyWindow(H_TOOLTIP);
+                    H_TOOLTIP = HWND(0);
+                }
+
                 let x = (lp.0 & 0xFFFF) as i16 as i32;
                 let y = ((lp.0 >> 16) & 0xFFFF) as i16 as i32;
 
@@ -887,6 +1043,9 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 let code = (wp.0 >> 16) & 0xFFFF;
                 if id == EDIT_ID as usize && code == 0x0300 {
                     // EN_CHANGE
+                    if !IS_CYCLING {
+                        HISTORY_INDEX = -1;
+                    }
                     let len = GetWindowTextLengthW(H_EDIT);
                     let mut buf = vec![0u16; (len + 1) as usize];
                     GetWindowTextW(H_EDIT, &mut buf);
@@ -926,6 +1085,23 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 DefWindowProcW(hwnd, msg, wp, lp)
             }
 
+            WM_KEYDOWN => {
+                let vk = wp.0 as u16;
+                // Arrow keys for history navigation when dropdown is closed
+                if !SHOW_DROPDOWN {
+                    if vk == VK_UP.0 {
+                        cycle_history(-1); // Swapped: Up is now newer
+                        InvalidateRect(hwnd, None, BOOL(0));
+                        return LRESULT(0);
+                    } else if vk == VK_DOWN.0 {
+                        cycle_history(1); // Swapped: Down is now older
+                        InvalidateRect(hwnd, None, BOOL(0));
+                        return LRESULT(0);
+                    }
+                }
+                DefWindowProcW(hwnd, msg, wp, lp)
+            }
+
             _ => DefWindowProcW(hwnd, msg, wp, lp),
         }
     }
@@ -959,6 +1135,7 @@ unsafe extern "system" fn dropdown_wndproc(
         windows::Win32::UI::WindowsAndMessaging::WM_SHOWWINDOW => {
             if wp.0 == 1 {
                 set_acrylic_effect(hwnd);
+                InvalidateRect(hwnd, None, BOOL(0));
             }
             LRESULT(0)
         }
@@ -1087,6 +1264,36 @@ unsafe extern "system" fn dropdown_wndproc(
             LRESULT(0)
         }
 
+        windows::Win32::UI::WindowsAndMessaging::WM_LBUTTONDOWN => {
+            if let Some(idx) = HOVER_DROPDOWN {
+                if let Some(history) = HISTORY.as_ref() {
+                    if let Some(cmd) = history.get(SCROLL_OFFSET + idx) {
+                        if let Ok(mut lock) = INPUT_BUFFER.lock() {
+                            *lock = cmd.clone();
+                        }
+                        SetWindowTextW(
+                            H_EDIT,
+                            PCWSTR(
+                                cmd.encode_utf16()
+                                    .chain(std::iter::once(0))
+                                    .collect::<Vec<_>>()
+                                    .as_ptr(),
+                            ),
+                        );
+
+                        // Close dropdown
+                        SHOW_DROPDOWN = false;
+                        ShowWindow(hwnd, SW_HIDE);
+
+                        // Set focus back to edit
+                        SetFocus(H_EDIT);
+                        SendMessageW(H_EDIT, EM_SETSEL, WPARAM(0), LPARAM(-1 as isize));
+                    }
+                }
+            }
+            LRESULT(0)
+        }
+
         windows::Win32::UI::WindowsAndMessaging::WM_MOUSEMOVE => {
             let y = (lp.0 >> 16) as i16 as f32;
             let idx = (y / ITEM_H) as usize;
@@ -1116,35 +1323,6 @@ unsafe extern "system" fn dropdown_wndproc(
         WM_MOUSELEAVE => {
             HOVER_DROPDOWN = None;
             InvalidateRect(hwnd, None, BOOL(0));
-            LRESULT(0)
-        }
-
-        windows::Win32::UI::WindowsAndMessaging::WM_LBUTTONDOWN => {
-            if let Some(idx) = HOVER_DROPDOWN {
-                if let Some(history) = HISTORY.as_ref() {
-                    if let Some(cmd) = history.get(SCROLL_OFFSET + idx) {
-                        if let Ok(mut lock) = INPUT_BUFFER.lock() {
-                            *lock = cmd.clone();
-                        }
-                        SetWindowTextW(
-                            H_EDIT,
-                            PCWSTR(
-                                cmd.encode_utf16()
-                                    .chain(std::iter::once(0))
-                                    .collect::<Vec<_>>()
-                                    .as_ptr(),
-                            ),
-                        );
-
-                        // Close dropdown
-                        SHOW_DROPDOWN = false;
-                        ShowWindow(hwnd, SW_HIDE);
-
-                        // Set focus back to edit
-                        SetFocus(H_EDIT);
-                    }
-                }
-            }
             LRESULT(0)
         }
 
@@ -1353,6 +1531,28 @@ unsafe fn ensure_dropdown_resources(hwnd: HWND) {
         close_hover,
         accent,
         accent_hover,
+        selection: rt
+            .CreateSolidColorBrush(
+                &D2D1_COLOR_F {
+                    r: ar,
+                    g: ag,
+                    b: ab,
+                    a: 0.4,
+                },
+                None,
+            )
+            .unwrap(),
+        input_border: rt
+            .CreateSolidColorBrush(
+                &D2D1_COLOR_F {
+                    r: gray_col,
+                    g: gray_col,
+                    b: gray_col,
+                    a: 0.15, // Extra subtle
+                },
+                None,
+            )
+            .unwrap(),
     });
 }
 
@@ -1509,6 +1709,28 @@ unsafe fn ensure_resources(hwnd: HWND) {
         close_hover,
         accent,
         accent_hover,
+        selection: rt
+            .CreateSolidColorBrush(
+                &D2D1_COLOR_F {
+                    r: ar,
+                    g: ag,
+                    b: ab,
+                    a: 0.4,
+                },
+                None,
+            )
+            .unwrap(),
+        input_border: rt
+            .CreateSolidColorBrush(
+                &D2D1_COLOR_F {
+                    r: gray_col,
+                    g: gray_col,
+                    b: gray_col,
+                    a: 0.15, // Extra subtle
+                },
+                None,
+            )
+            .unwrap(),
     });
 
     if WIC_FACTORY.is_none() {
@@ -1584,22 +1806,6 @@ unsafe fn ensure_resources(hwnd: HWND) {
         .SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)
         .ok();
 
-    let input = dwrite
-        .CreateTextFormat(
-            w!("Segoe UI Variable Text"),
-            None,
-            DWRITE_FONT_WEIGHT_NORMAL,
-            DWRITE_FONT_STYLE_NORMAL,
-            DWRITE_FONT_STRETCH_NORMAL,
-            13.0,
-            w!(""),
-        )
-        .unwrap();
-    input.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING).ok();
-    input
-        .SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)
-        .ok();
-
     let button = dwrite
         .CreateTextFormat(
             w!("Segoe UI Variable Text"),
@@ -1616,11 +1822,28 @@ unsafe fn ensure_resources(hwnd: HWND) {
         .SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)
         .ok();
 
+    // Tooltip font - light weight for thin appearance
+    let tooltip = dwrite
+        .CreateTextFormat(
+            w!("Segoe UI Variable Text"),
+            None,
+            DWRITE_FONT_WEIGHT_REGULAR,
+            DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL,
+            12.0,
+            w!(""),
+        )
+        .unwrap();
+    tooltip.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING).ok();
+    tooltip
+        .SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)
+        .ok();
+
     FONTS = Some(Fonts {
         title,
         label,
-        input,
         button,
+        tooltip,
     });
     RENDER_TARGET = Some(target.clone());
 }
@@ -1720,9 +1943,9 @@ unsafe fn paint() {
         rt.DrawBitmap(
             bitmap,
             Some(&D2D_RECT_F {
-                left: MARGIN,
+                left: MARGIN - 5.0,
                 top: TITLE_Y - 2.0, // Center vertically with text (24px icon)
-                right: MARGIN + icon_size,
+                right: MARGIN - 5.0 + icon_size,
                 bottom: TITLE_Y - 2.0 + icon_size,
             }),
             1.0,
@@ -1735,7 +1958,7 @@ unsafe fn paint() {
         get_str_title(),
         &f.title,
         &D2D_RECT_F {
-            left: MARGIN + icon_size + 8.0,
+            left: MARGIN - 5.0 + icon_size + 8.0,
             top: TITLE_Y,
             right: 200.0,
             bottom: TITLE_Y + 20.0,
@@ -1752,6 +1975,8 @@ unsafe fn paint() {
         right: w - MARGIN,
         bottom: INPUT_Y + INPUT_H,
     };
+    // Note: Native Edit control handles its own background now
+    // Only draw a subtle border
     rt.FillRoundedRectangle(
         &D2D1_ROUNDED_RECT {
             rect: input_rect,
@@ -1760,107 +1985,136 @@ unsafe fn paint() {
         },
         &b.input_bg,
     );
+    rt.DrawRoundedRectangle(
+        &D2D1_ROUNDED_RECT {
+            rect: input_rect,
+            radiusX: CORNER_RADIUS,
+            radiusY: CORNER_RADIUS,
+        },
+        &b.input_border,
+        1.0,
+        None,
+    );
 
-    // Input text
+    // Draw input text with D2D
     if let Ok(buf) = INPUT_BUFFER.lock() {
         let text_rect = D2D_RECT_F {
             left: MARGIN + 10.0,
-            top: INPUT_Y,
-            right: w - MARGIN - 10.0,
-            bottom: INPUT_Y + INPUT_H,
+            top: INPUT_Y + 8.0,
+            right: w - MARGIN - 30.0,
+            bottom: INPUT_Y + INPUT_H - 8.0,
         };
 
-        let text_str: Vec<u16> = if buf.is_empty() {
-            get_str_placeholder().to_vec()
-        } else {
-            buf.encode_utf16().collect()
-        };
-
-        let format = &f.input; // Use same format for now
+        let text_u16: Vec<u16> = buf.encode_utf16().collect();
         let brush = if buf.is_empty() { &b.gray } else { &b.white };
 
-        if let Some(dwrite) = DWRITE_FACTORY.as_ref() {
-            if let Ok(layout) = dwrite.CreateTextLayout(
-                &text_str,
-                format,
-                text_rect.right - text_rect.left,
-                text_rect.bottom - text_rect.top,
-            ) {
-                rt.DrawTextLayout(
-                    D2D_POINT_2F {
-                        x: text_rect.left,
-                        y: text_rect.top,
-                    },
-                    &layout,
-                    brush,
-                    D2D1_DRAW_TEXT_OPTIONS_NONE,
-                );
+        if !buf.is_empty() {
+            // Use TextLayout for selection highlighting and text rendering
+            if let Some(dwrite) = &DWRITE_FACTORY {
+                if let Ok(layout) = dwrite.CreateTextLayout(
+                    &text_u16,
+                    &f.button,
+                    text_rect.right - text_rect.left,
+                    text_rect.bottom - text_rect.top,
+                ) {
+                    layout.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING).ok();
 
-                // Draw Caret
-                if windows::Win32::UI::Input::KeyboardAndMouse::GetFocus() == H_EDIT {
-                    // Blink logic
-                    let blink_time = GetCaretBlinkTime();
-                    let tick = GetTickCount();
-                    if (tick / blink_time) % 2 == 0 {
-                        let mut start: u32 = 0;
-                        let mut end: u32 = 0;
-                        SendMessageW(
-                            H_EDIT,
-                            0x00B0,
-                            WPARAM(&mut start as *mut _ as usize),
-                            LPARAM(&mut end as *mut _ as isize),
-                        );
+                    // 1. Draw Selection Highlight
+                    let lresult = unsafe { SendMessageW(H_EDIT, EM_GETSEL, WPARAM(0), LPARAM(0)) };
+                    let start = (lresult.0 & 0xFFFF) as u32; // Low-order word
+                    let end = ((lresult.0 >> 16) & 0xFFFF) as u32; // High-order word
 
-                        let mut caret_x: f32 = 0.0;
-                        let mut caret_y: f32 = 0.0;
-                        let mut metrics: DWRITE_HIT_TEST_METRICS = std::mem::zeroed();
+                    if start != end {
+                        let mut x1: f32 = 0.0;
+                        let mut y1: f32 = 0.0;
+                        let mut metrics1: DWRITE_HIT_TEST_METRICS = std::mem::zeroed();
+                        layout
+                            .HitTestTextPosition(start, false, &mut x1, &mut y1, &mut metrics1)
+                            .ok();
 
-                        let caret_pos = if buf.is_empty() { 0 } else { end };
+                        let mut x2: f32 = 0.0;
+                        let mut y2: f32 = 0.0;
+                        let mut metrics2: DWRITE_HIT_TEST_METRICS = std::mem::zeroed();
+                        layout
+                            .HitTestTextPosition(end, false, &mut x2, &mut y2, &mut metrics2)
+                            .ok();
 
-                        if buf.is_empty() {
-                            rt.DrawLine(
-                                D2D_POINT_2F {
-                                    x: text_rect.left,
-                                    y: text_rect.top + 8.0,
-                                },
-                                D2D_POINT_2F {
-                                    x: text_rect.left,
-                                    y: text_rect.top + 25.0,
-                                },
-                                &b.white,
-                                1.0,
-                                None,
-                            );
-                        } else {
-                            layout
-                                .HitTestTextPosition(
-                                    caret_pos,
-                                    false, // isTrailingHit
-                                    &mut caret_x,
-                                    &mut caret_y,
-                                    &mut metrics,
-                                )
-                                .ok();
-
-                            let abs_x = text_rect.left + caret_x;
-                            let abs_y = text_rect.top + caret_y;
-                            rt.DrawLine(
-                                D2D_POINT_2F {
-                                    x: abs_x,
-                                    y: abs_y + 3.0,
-                                },
-                                D2D_POINT_2F {
-                                    x: abs_x,
-                                    y: abs_y + 18.0,
-                                },
-                                &b.white,
-                                1.0,
-                                None,
-                            );
-                        }
+                        let sel_rect = D2D_RECT_F {
+                            left: text_rect.left + x1,
+                            top: text_rect.top,
+                            right: text_rect.left + x2,
+                            bottom: text_rect.bottom,
+                        };
+                        rt.FillRectangle(&sel_rect, &b.selection);
                     }
+
+                    // 2. Draw Text
+                    rt.DrawTextLayout(
+                        D2D_POINT_2F {
+                            x: text_rect.left,
+                            y: text_rect.top,
+                        },
+                        &layout,
+                        brush,
+                        D2D1_DRAW_TEXT_OPTIONS_NONE,
+                    );
                 }
             }
+        }
+
+        // Draw blinking cursor
+        let blink_time = GetCaretBlinkTime();
+        let blink_time = if blink_time == 0 { 500 } else { blink_time };
+        let tick = GetTickCount();
+        if (tick / blink_time) % 2 == 0 {
+            // Calculate cursor X position using TextLayout for accuracy
+            let cursor_x = if buf.is_empty() {
+                text_rect.left
+            } else {
+                // Use DirectWrite TextLayout to get actual text width
+                if let Some(dwrite) = &DWRITE_FACTORY {
+                    if let Ok(layout) = dwrite.CreateTextLayout(
+                        &text_u16,
+                        &f.button,
+                        text_rect.right - text_rect.left,
+                        text_rect.bottom - text_rect.top,
+                    ) {
+                        // Set left alignment for proper cursor positioning
+                        layout.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING).ok();
+                        let mut x: f32 = 0.0;
+                        let mut y: f32 = 0.0;
+                        let mut metrics: DWRITE_HIT_TEST_METRICS = std::mem::zeroed();
+                        // Get position after last character
+                        layout
+                            .HitTestTextPosition(
+                                buf.chars().count() as u32,
+                                false,
+                                &mut x,
+                                &mut y,
+                                &mut metrics,
+                            )
+                            .ok();
+                        text_rect.left + x
+                    } else {
+                        text_rect.left
+                    }
+                } else {
+                    text_rect.left
+                }
+            };
+            rt.DrawLine(
+                D2D_POINT_2F {
+                    x: cursor_x,
+                    y: text_rect.top,
+                },
+                D2D_POINT_2F {
+                    x: cursor_x,
+                    y: text_rect.bottom,
+                },
+                &b.white,
+                1.5,
+                None,
+            );
         }
     }
 
@@ -1977,18 +2231,30 @@ unsafe fn show_tooltip(msg: &str) {
     let main_hwnd = FindWindowW(w!("SwiftRunClass"), w!("SwiftRun"));
     GetWindowRect(main_hwnd, &mut main_rect);
 
-    // Position below input
-    let width = 400;
-    let height = 40;
+    // Calculate dynamic width based on text length
+    let text_len = msg.chars().count();
+    let char_width: usize = 8; // Characters ~8px wide
+                               //let padding = 1; // Left + right padding
+    let min_width: usize = 1;
+    let max_width = WIN_W as usize; // Cap at main window width
+    let width = (text_len * char_width.max(min_width).min(max_width) - 25) as i32; //minus margins
+    let height = 22; // Compact
+    let dpi_scale = get_dpi_scale(main_hwnd);
+
+    // Check if main window is visible/valid?
+    // Assuming yes.
+
     let x = main_rect.left + (WIN_W as i32 - width) / 2;
-    let y = main_rect.top + (WIN_H as i32) - 160; // Overlay slightly or just below
+    // Calculate Y based on Input Y
+    let input_y_screen = main_rect.top + ((INPUT_Y * dpi_scale) as i32);
+    let y = input_y_screen - height - 10; // 10px padding above input
 
     let instance = GetModuleHandleW(None).unwrap();
     H_TOOLTIP = CreateWindowExW(
         WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
         w!("SwiftRunTooltip"),
         w!(""),
-        WS_POPUP | WS_VISIBLE,
+        WS_POPUP, // Removed WS_VISIBLE to prevent focus steal
         x,
         y,
         width,
@@ -1999,12 +2265,19 @@ unsafe fn show_tooltip(msg: &str) {
         None,
     );
 
-    // Rounded
-    let v: i32 = 2;
+    // Rounded corners (Small) - Windows 11 rounded appearance
+    let v: i32 = 3; // DWMWCP_ROUNDSMALL
     DwmSetWindowAttribute(H_TOOLTIP, DWMWINDOWATTRIBUTE(33), &v as *const _ as _, 4).ok();
+
+    // Show without activating
+    ShowWindow(H_TOOLTIP, SW_SHOWNOACTIVATE);
 
     // Auto-close after 8 seconds
     SetTimer(H_TOOLTIP, 2, 8000, None);
+
+    // Highlight text in input box
+    SetFocus(H_EDIT);
+    SendMessageW(H_EDIT, EM_SETSEL, WPARAM(0), LPARAM(-1 as isize));
 }
 
 unsafe extern "system" fn tooltip_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -2014,6 +2287,12 @@ unsafe extern "system" fn tooltip_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: 
                 DestroyWindow(hwnd);
                 H_TOOLTIP = HWND(0);
             }
+            LRESULT(0)
+        }
+        WM_LBUTTONDOWN => {
+            // Click to dismiss
+            DestroyWindow(hwnd);
+            H_TOOLTIP = HWND(0);
             LRESULT(0)
         }
         WM_PAINT => {
@@ -2056,13 +2335,13 @@ unsafe extern "system" fn tooltip_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: 
                             a: 0.0,
                         }));
 
-                        // Draw Red-ish Fluent Background
+                        // Draw Dark Gray Background
                         if let Ok(bg_brush) = target.CreateSolidColorBrush(
                             &D2D1_COLOR_F {
-                                r: 0.2,
-                                g: 0.0,
-                                b: 0.0,
-                                a: 0.9,
+                                r: 0.1,
+                                g: 0.1,
+                                b: 0.1,
+                                a: 0.55, // Even more transparent
                             },
                             None,
                         ) {
@@ -2074,7 +2353,7 @@ unsafe extern "system" fn tooltip_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: 
                                         right: w as f32,
                                         bottom: h as f32,
                                     },
-                                    radiusX: 4.0,
+                                    radiusX: 4.0, // Matches RoundSmall better
                                     radiusY: 4.0,
                                 },
                                 &bg_brush,
@@ -2093,20 +2372,32 @@ unsafe extern "system" fn tooltip_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: 
                         ) {
                             if let Some(f) = &FONTS {
                                 let msg_u16 = TOOLTIP_TEXT.encode_utf16().collect::<Vec<u16>>();
-                                // Use button font for compact
-                                target.DrawText(
-                                    &msg_u16,
-                                    &f.button,
-                                    &D2D_RECT_F {
-                                        left: 10.0,
-                                        top: 0.0,
-                                        right: w as f32,
-                                        bottom: h as f32,
-                                    },
-                                    &text_brush,
-                                    D2D1_DRAW_TEXT_OPTIONS_NONE,
-                                    DWRITE_MEASURING_MODE_NATURAL,
-                                );
+                                // Use TextLayout for proper left alignment
+                                if let Some(dwrite) = &DWRITE_FACTORY {
+                                    if let Ok(layout) = dwrite.CreateTextLayout(
+                                        &msg_u16,
+                                        &f.tooltip,      // Light weight tooltip font
+                                        w as f32 - 12.0, // Width for text wrapping
+                                        h as f32,
+                                    ) {
+                                        // Explicitly set LEFT alignment and VERTICAL center
+                                        layout.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING).ok();
+                                        layout
+                                            .SetParagraphAlignment(
+                                                DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
+                                            )
+                                            .ok();
+                                        target.DrawTextLayout(
+                                            D2D_POINT_2F {
+                                                x: 6.0,  // Left padding
+                                                y: -2.0, // Negative to move text UP for centering
+                                            },
+                                            &layout,
+                                            &text_brush,
+                                            D2D1_DRAW_TEXT_OPTIONS_NONE,
+                                        );
+                                    }
+                                }
                             }
                         }
 
