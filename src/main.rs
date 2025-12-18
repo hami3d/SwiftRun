@@ -16,8 +16,8 @@ use windows::{
             D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_POINT_2F,
             D2D_RECT_F, D2D_SIZE_U,
         },
-        D2D1CreateFactory, ID2D1Bitmap, ID2D1Factory, ID2D1HwndRenderTarget, ID2D1Layer,
-        ID2D1RenderTarget, ID2D1SolidColorBrush, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+        D2D1CreateFactory, ID2D1Bitmap, ID2D1Factory, ID2D1HwndRenderTarget, ID2D1RenderTarget,
+        ID2D1SolidColorBrush, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
         D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_FACTORY_OPTIONS,
         D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_HWND_RENDER_TARGET_PROPERTIES,
         D2D1_LAYER_PARAMETERS, D2D1_PRESENT_OPTIONS_NONE, D2D1_RENDER_TARGET_PROPERTIES,
@@ -30,13 +30,16 @@ use windows::{
     Win32::Graphics::Imaging::*,
     Win32::System::Com::*,
     Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED},
+    Win32::System::Diagnostics::ToolHelp::*,
     Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress},
-    Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD},
+    Win32::System::Registry::*,
     Win32::System::SystemInformation::GetTickCount,
+    Win32::System::Threading::*,
     Win32::UI::Controls::{EM_GETSEL, EM_SETSEL, MARGINS},
     Win32::UI::HiDpi::{GetDpiForWindow, SetProcessDpiAwareness},
     Win32::UI::Input::KeyboardAndMouse::{
-        GetKeyState, SetFocus, VK_BACK, VK_CONTROL, VK_DOWN, VK_RETURN, VK_SHIFT, VK_UP,
+        GetKeyState, RegisterHotKey, SetFocus, UnregisterHotKey, MOD_NOREPEAT, MOD_WIN, VK_BACK,
+        VK_CONTROL, VK_DOWN, VK_ESCAPE, VK_R, VK_RETURN, VK_SHIFT, VK_UP,
     },
     Win32::UI::Shell::ShellExecuteW,
     Win32::UI::WindowsAndMessaging::*,
@@ -54,7 +57,12 @@ static mut DROPDOWN_RENDER_TARGET: Option<ID2D1HwndRenderTarget> = None;
 static mut HOVER_DROPDOWN: Option<usize> = None;
 static mut HISTORY_INDEX: isize = -1; // -1 = current input, 0 = latest history
 
-// Error Dialog State
+// Fluent Dialog State
+static mut DIALOG_TITLE: String = String::new();
+static mut DIALOG_MESSAGE: String = String::new();
+static mut DIALOG_HOVER_OK: bool = false;
+static mut DIALOG_ACTIVE: bool = false;
+
 // Tooltip state
 static mut TOOLTIP_TEXT: String = String::new();
 static mut H_TOOLTIP: HWND = HWND(0);
@@ -70,6 +78,7 @@ enum AnimType {
 
 static mut ANIM_START_TIME: Option<Instant> = None;
 static mut ANIM_TYPE: AnimType = AnimType::None;
+static mut EXIT_KILL_PROCESS: bool = false;
 static mut FINAL_X: i32 = 0;
 static mut FINAL_Y: i32 = 0;
 static mut START_Y: i32 = 0;
@@ -394,18 +403,173 @@ fn get_accent_color_values() -> (f32, f32, f32) {
     }
 }
 
+fn manage_registry_hooks(install: bool) -> Result<()> {
+    unsafe {
+        // 1. Manage Run key for autostart
+        let run_key_path = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
+        let mut h_key = HKEY::default();
+
+        if RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            run_key_path,
+            0,
+            KEY_SET_VALUE | KEY_QUERY_VALUE,
+            &mut h_key,
+        )
+        .is_ok()
+        {
+            if install {
+                if let Ok(exe_path) = std::env::current_exe() {
+                    let path_str = exe_path.to_string_lossy().to_string();
+                    let path_u16: Vec<u16> =
+                        path_str.encode_utf16().chain(std::iter::once(0)).collect();
+                    let data = std::slice::from_raw_parts(
+                        path_u16.as_ptr() as *const u8,
+                        path_u16.len() * 2,
+                    );
+                    RegSetValueExW(h_key, w!("SwiftRun"), 0, REG_SZ, Some(data)).ok()?;
+                }
+            } else {
+                let _ = RegDeleteValueW(h_key, w!("SwiftRun"));
+            }
+            RegCloseKey(h_key);
+        }
+
+        // 2. Manage DisabledHotkeys to hijack Win+R
+        let explorer_key_path =
+            w!("Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced");
+        if RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            explorer_key_path,
+            0,
+            KEY_SET_VALUE | KEY_QUERY_VALUE,
+            &mut h_key,
+        )
+        .is_ok()
+        {
+            let val_name = w!("DisabledHotkeys");
+
+            if install {
+                // Get existing
+                let mut data = [0u16; 128];
+                let mut size = (data.len() * 2) as u32;
+                let mut current_val = String::new();
+                if RegQueryValueExW(
+                    h_key,
+                    val_name,
+                    None,
+                    None,
+                    Some(data.as_mut_ptr() as _),
+                    Some(&mut size),
+                )
+                .is_ok()
+                {
+                    current_val =
+                        String::from_utf16_lossy(&data[..(size as usize / 2).saturating_sub(1)]);
+                }
+
+                if !current_val.contains('R') {
+                    current_val.push('R');
+                    let val_u16: Vec<u16> = current_val
+                        .encode_utf16()
+                        .chain(std::iter::once(0))
+                        .collect();
+                    let data_slice = std::slice::from_raw_parts(
+                        val_u16.as_ptr() as *const u8,
+                        val_u16.len() * 2,
+                    );
+                    RegSetValueExW(h_key, val_name, 0, REG_SZ, Some(data_slice)).ok()?;
+                }
+            } else {
+                // Remove 'R' from DisabledHotkeys
+                let mut data = [0u16; 128];
+                let mut size = (data.len() * 2) as u32;
+                if RegQueryValueExW(
+                    h_key,
+                    val_name,
+                    None,
+                    None,
+                    Some(data.as_mut_ptr() as _),
+                    Some(&mut size),
+                )
+                .is_ok()
+                {
+                    let current_val =
+                        String::from_utf16_lossy(&data[..(size as usize / 2).saturating_sub(1)]);
+                    if current_val.contains('R') {
+                        let new_val: String = current_val.chars().filter(|&c| c != 'R').collect();
+                        if new_val.is_empty() {
+                            let _ = RegDeleteValueW(h_key, val_name);
+                        } else {
+                            let val_u16: Vec<u16> =
+                                new_val.encode_utf16().chain(std::iter::once(0)).collect();
+                            let data_slice = std::slice::from_raw_parts(
+                                val_u16.as_ptr() as *const u8,
+                                val_u16.len() * 2,
+                            );
+                            let _ = RegSetValueExW(h_key, val_name, 0, REG_SZ, Some(data_slice));
+                        }
+                    }
+                }
+            }
+            RegCloseKey(h_key);
+        }
+    }
+    Ok(())
+}
+
+unsafe fn restart_explorer() {
+    let snapshot = match CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let mut entry = PROCESSENTRY32W::default();
+    entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+
+    if Process32FirstW(snapshot, &mut entry).as_bool() {
+        loop {
+            let len = entry
+                .szExeFile
+                .iter()
+                .position(|&c| c == 0)
+                .unwrap_or(entry.szExeFile.len());
+            let exe_name = String::from_utf16_lossy(&entry.szExeFile[..len]);
+
+            if exe_name.eq_ignore_ascii_case("explorer.exe") {
+                if let Ok(handle) = OpenProcess(PROCESS_TERMINATE, false, entry.th32ProcessID) {
+                    let _ = TerminateProcess(handle, 0);
+                    let _ = CloseHandle(handle);
+                }
+            }
+            if !Process32NextW(snapshot, &mut entry).as_bool() {
+                break;
+            }
+        }
+    }
+    let _ = CloseHandle(snapshot);
+    let _ = ShellExecuteW(None, None, w!("explorer.exe"), None, None, SW_SHOWNORMAL);
+}
+
 fn main() -> Result<()> {
     unsafe {
         CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok();
-        load_history();
-
         // Set DPI awareness - Per Monitor V2
         let _ = SetProcessDpiAwareness(windows::Win32::UI::HiDpi::PROCESS_PER_MONITOR_DPI_AWARE);
 
+        D2D_FACTORY = D2D1CreateFactory(
+            D2D1_FACTORY_TYPE_SINGLE_THREADED,
+            Some(&D2D1_FACTORY_OPTIONS::default()),
+        )
+        .ok();
+        DWRITE_FACTORY = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED).ok();
+
         let instance = GetModuleHandleW(None)?;
         let class_name = w!("SwiftRunClass");
+        let dropdown_class_name = w!("SwiftRunDropdown");
+        let tooltip_class_name = w!("SwiftRunTooltip");
+        let dialog_class_name = w!("SwiftDialog");
 
-        // Load Icon early for both windows
+        // Load Icon early for all windows
         let h_icon = LoadImageW(
             instance,
             w!("icon.ico"),
@@ -417,6 +581,7 @@ fn main() -> Result<()> {
         .map(|h| HICON(h.0 as _))
         .unwrap_or(LoadIconW(None, IDI_APPLICATION).unwrap_or(HICON(0)));
 
+        // Register All Classes
         let wc = WNDCLASSW {
             style: CS_DBLCLKS,
             hCursor: LoadCursorW(None, IDC_ARROW)?,
@@ -428,6 +593,74 @@ fn main() -> Result<()> {
             ..Default::default()
         };
         RegisterClassW(&wc);
+
+        let wc_dropdown = WNDCLASSW {
+            hCursor: LoadCursorW(None, IDC_ARROW).unwrap(),
+            hInstance: instance,
+            lpszClassName: dropdown_class_name,
+            lpfnWndProc: Some(dropdown_wndproc),
+            hbrBackground: HBRUSH::default(),
+            hIcon: h_icon,
+            ..Default::default()
+        };
+        RegisterClassW(&wc_dropdown);
+
+        let wc_tooltip = WNDCLASSW {
+            hCursor: LoadCursorW(None, IDC_ARROW).unwrap(),
+            hInstance: instance,
+            lpszClassName: tooltip_class_name,
+            lpfnWndProc: Some(tooltip_wndproc),
+            hbrBackground: HBRUSH::default(),
+            hIcon: h_icon,
+            ..Default::default()
+        };
+        RegisterClassW(&wc_tooltip);
+
+        let wc_dialog = WNDCLASSW {
+            hCursor: LoadCursorW(None, IDC_ARROW).unwrap(),
+            hInstance: instance,
+            lpszClassName: dialog_class_name,
+            lpfnWndProc: Some(dialog_wndproc),
+            hbrBackground: HBRUSH::default(),
+            hIcon: h_icon,
+            ..Default::default()
+        };
+        RegisterClassW(&wc_dialog);
+
+        let args: Vec<String> = std::env::args().collect();
+        if args.len() > 1 {
+            if args[1] == "--install" {
+                if let Err(e) = manage_registry_hooks(true) {
+                    show_fluent_dialog(
+                        "Setup Error",
+                        &format!("Failed to install registry hooks: {:?}", e),
+                    );
+                    return Err(e);
+                }
+                show_fluent_dialog(
+                    "SwiftRun Setup",
+                    "SwiftRun installed! Explorer will now restart to finalize the takeover. SwiftRun will start in the background.",
+                );
+                restart_explorer();
+                // continue execution to start the ghost process immediately
+            } else if args[1] == "--uninstall" {
+                if let Err(e) = manage_registry_hooks(false) {
+                    show_fluent_dialog(
+                        "Setup Error",
+                        &format!("Failed to uninstall registry hooks: {:?}", e),
+                    );
+                    return Err(e);
+                }
+                show_fluent_dialog(
+                    "SwiftRun Setup",
+                    "SwiftRun uninstalled! Win+R will return to default behavior after restart.",
+                );
+                restart_explorer();
+                return Ok(());
+            }
+        }
+
+        load_history();
 
         // Position at bottom-left of work area (like original Run dialog)
         let mut work_area = RECT::default();
@@ -443,36 +676,6 @@ fn main() -> Result<()> {
         let x = work_area.left + margin_px;
         let y = work_area.bottom - WIN_H as i32 - margin_px;
 
-        // Register Dropdown Class
-        let dropdown_class_name = w!("SwiftRunDropdown");
-        // Reuse h_icon for dropdown class too, or just use it.
-        // The original code was loading it again or failing to compile because h_icon was below.
-        // We already moved h_icon definition up. We can just use `h_icon` here or copy it? HICON is Copy.
-
-        let wc_dropdown = WNDCLASSW {
-            hCursor: LoadCursorW(None, IDC_ARROW).unwrap(),
-            hInstance: instance,
-            lpszClassName: dropdown_class_name,
-            lpfnWndProc: Some(dropdown_wndproc),
-            hbrBackground: HBRUSH::default(),
-            hIcon: h_icon,
-            ..Default::default()
-        };
-        RegisterClassW(&wc_dropdown);
-
-        // Register Tooltip Class
-        let tooltip_class_name = w!("SwiftRunTooltip");
-        let wc_tooltip = WNDCLASSW {
-            hCursor: LoadCursorW(None, IDC_ARROW).unwrap(),
-            hInstance: instance,
-            lpszClassName: tooltip_class_name,
-            lpfnWndProc: Some(tooltip_wndproc),
-            hbrBackground: HBRUSH::default(),
-            hIcon: h_icon,
-            ..Default::default()
-        };
-        RegisterClassW(&wc_tooltip);
-
         FINAL_X = x;
         FINAL_Y = y;
         START_Y = work_area.bottom;
@@ -482,7 +685,7 @@ fn main() -> Result<()> {
             WINDOW_EX_STYLE::default(),
             class_name,
             w!("SwiftRun"),
-            WS_POPUP | WS_VISIBLE, // Removed WS_CLIPCHILDREN - D2D doesn't respect it
+            WS_POPUP, // Start Hidden (Ghost Process)
             x,
             START_Y, // Start at bottom edge
             WIN_W as i32,
@@ -492,6 +695,18 @@ fn main() -> Result<()> {
             instance,
             None,
         );
+
+        // Register Global Hotkey Win + R
+        // 1 = ID
+        if RegisterHotKey(hwnd, 1, MOD_WIN | MOD_NOREPEAT, VK_R.0 as u32) == BOOL(0) {
+            show_fluent_dialog(
+                "SwiftRun Warning",
+                "Failed to register Win+R hotkey. Is Explorer locking it?",
+            );
+            // Fallback: Show window so user isn't confused
+            ShowWindow(hwnd, SW_SHOW);
+            ANIM_TYPE = AnimType::Entering; // Or just static show
+        }
 
         // Create Dropdown Window (Hidden initially)
         let h_dropdown = CreateWindowExW(
@@ -550,13 +765,18 @@ fn main() -> Result<()> {
         let hfont = CreateFontW(20, 0, 0, 0, 400, 0, 0, 0, 0, 0, 0, 0, 0, w!("Segoe UI"));
         SendMessageW(H_EDIT, WM_SETFONT, WPARAM(hfont.0 as usize), LPARAM(1));
 
-        // Init D2D
-        D2D_FACTORY = D2D1CreateFactory(
-            D2D1_FACTORY_TYPE_SINGLE_THREADED,
-            Some(&D2D1_FACTORY_OPTIONS::default()),
-        )
-        .ok();
-        DWRITE_FACTORY = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED).ok();
+        // Pre-fill input with latest history entry
+        if let Some(history) = &HISTORY {
+            if let Some(latest) = history.first() {
+                if let Ok(mut lock) = INPUT_BUFFER.lock() {
+                    *lock = latest.clone();
+                }
+                let latest_u16: Vec<u16> =
+                    latest.encode_utf16().chain(std::iter::once(0)).collect();
+                SetWindowTextW(H_EDIT, PCWSTR(latest_u16.as_ptr()));
+                SendMessageW(H_EDIT, EM_SETSEL, WPARAM(0), LPARAM(-1));
+            }
+        }
 
         // Setup blink timer
         let blink_time = GetCaretBlinkTime();
@@ -568,13 +788,24 @@ fn main() -> Result<()> {
         ANIM_START_TIME = Some(Instant::now());
         SetTimer(hwnd, 3, 10, None);
 
-        SetFocus(hwnd);
+        // Remove initial SetFocus since we start hidden
+        // SetFocus(hwnd);
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).into() {
             // Keyboard hooks for Edit control
             if (msg.message == WM_KEYDOWN || msg.message == WM_KEYUP) && msg.hwnd == H_EDIT {
                 let vk = msg.wParam.0 as i32;
+
+                // Handle :quit command on Enter
+                if msg.message == WM_KEYDOWN && vk == VK_RETURN.0 as i32 {
+                    if let Ok(cmd) = INPUT_BUFFER.lock() {
+                        if cmd.trim() == ":quit" || cmd.trim() == ":exit" {
+                            start_exit_animation(hwnd, true); // True to kill process
+                            continue;
+                        }
+                    }
+                }
 
                 if msg.message == WM_KEYDOWN {
                     if vk == VK_UP.0 as i32 {
@@ -622,7 +853,7 @@ fn main() -> Result<()> {
             if msg.message == WM_KEYDOWN {
                 if msg.wParam.0 == 0x1B {
                     // VK_ESCAPE
-                    start_exit_animation(hwnd);
+                    start_exit_animation(hwnd, false);
                     continue;
                 }
             }
@@ -681,10 +912,28 @@ fn hit_test(x: i32, y: i32, w: f32, _h: f32, input_empty: bool) -> HoverId {
     HoverId::None
 }
 
-unsafe fn start_exit_animation(hwnd: HWND) {
+unsafe fn start_exit_animation(hwnd: HWND, kill: bool) {
     if ANIM_TYPE == AnimType::Exiting {
+        // If we are already exiting, update kill flag just in case
+        EXIT_KILL_PROCESS = kill;
         return;
     }
+    EXIT_KILL_PROCESS = kill;
+
+    let mut rect = RECT::default();
+    GetWindowRect(hwnd, &mut rect);
+
+    // If window was moved significantly away from its intended position,
+    // skip the exit animation and hide/quit immediately.
+    if rect.left != FINAL_X || rect.top != FINAL_Y {
+        if kill {
+            PostQuitMessage(0);
+        } else {
+            ShowWindow(hwnd, SW_HIDE);
+        }
+        return;
+    }
+
     // Dismiss dropdown and tooltip immediately
     if SHOW_DROPDOWN {
         SHOW_DROPDOWN = false;
@@ -854,6 +1103,395 @@ unsafe fn get_dpi_scale(hwnd: HWND) -> f32 {
     }
 }
 
+// =========================================================================
+// CUSTOM FLUENT DIALOG SYSTEM
+// =========================================================================
+// This section handles the rendering and logic of the custom message dialogs.
+// You can customize the look and feel by editing the constants and drawing
+// logic below.
+
+extern "system" fn dialog_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    unsafe {
+        match msg {
+            WM_CREATE => {
+                let v: i32 = 1;
+                DwmSetWindowAttribute(hwnd, DWMWINDOWATTRIBUTE(20), &v as *const _ as _, 4).ok();
+                set_acrylic_effect(hwnd);
+                let v: i32 = 2; // Round corners
+                DwmSetWindowAttribute(hwnd, DWMWINDOWATTRIBUTE(33), &v as *const _ as _, 4).ok();
+                let m = MARGINS {
+                    cxLeftWidth: -1,
+                    cxRightWidth: -1,
+                    cyTopHeight: -1,
+                    cyBottomHeight: -1,
+                };
+                DwmExtendFrameIntoClientArea(hwnd, &m).ok();
+
+                // Ensure layered window transparency is active
+                let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 255, LWA_ALPHA);
+
+                // DWMWA_MICA_EFFECT = 1029 (older Win11)
+                // DWMWA_SYSTEMBACKDROP_TYPE = 38 (newer Win11)
+                let backdrop: u32 = 3; // Acrylic
+                let _ = DwmSetWindowAttribute(
+                    hwnd,
+                    DWMWINDOWATTRIBUTE(38),
+                    &backdrop as *const _ as _,
+                    4,
+                );
+
+                LRESULT(0)
+            }
+            WM_ERASEBKGND => LRESULT(1),
+            WM_PAINT => {
+                let mut ps = PAINTSTRUCT::default();
+                BeginPaint(hwnd, &mut ps);
+
+                // --- DIALOG LAYOUT CONFIGURATION ---
+                let padding = 22.0;
+                let title_height = 15.0; //Dialog Text Padding
+                let button_w = 160.0;
+                let button_h = 38.0;
+
+                let scale = get_dpi_scale(hwnd);
+                let mut cr = RECT::default();
+                GetClientRect(hwnd, &mut cr);
+                let w = (cr.right - cr.left) as f32 / scale;
+                let h = (cr.bottom - cr.top) as f32 / scale;
+
+                if let Some(factory) = &D2D_FACTORY {
+                    let mut props = D2D1_RENDER_TARGET_PROPERTIES::default();
+                    props.pixelFormat = D2D1_PIXEL_FORMAT {
+                        format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                        alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+                    };
+
+                    let hwnd_props = D2D1_HWND_RENDER_TARGET_PROPERTIES {
+                        hwnd,
+                        pixelSize: D2D_SIZE_U {
+                            width: (cr.right - cr.left) as u32,
+                            height: (cr.bottom - cr.top) as u32,
+                        },
+                        presentOptions: D2D1_PRESENT_OPTIONS_NONE,
+                    };
+                    let rt = factory.CreateHwndRenderTarget(&props, &hwnd_props).unwrap();
+
+                    rt.BeginDraw();
+                    rt.Clear(Some(&D2D1_COLOR_F {
+                        r: 0.0,
+                        g: 0.0,
+                        b: 0.0,
+                        a: 0.0,
+                    })); // Full transparency
+
+                    let is_dark = is_dark_mode();
+
+                    // --- THEME-AWARE COLORS ---
+                    let text_color = if is_dark {
+                        D2D1_COLOR_F {
+                            r: 1.0,
+                            g: 1.0,
+                            b: 1.0,
+                            a: 1.0,
+                        } // White text for dark mode
+                    } else {
+                        D2D1_COLOR_F {
+                            r: 0.1,
+                            g: 0.1,
+                            b: 0.1,
+                            a: 1.0,
+                        } // Near-black text for light mode
+                    };
+                    let brush = rt.CreateSolidColorBrush(&text_color, None).unwrap();
+
+                    // --- FONT CONFIGURATION (TITLE) ---
+                    let title_format = DWRITE_FACTORY
+                        .as_ref()
+                        .unwrap()
+                        .CreateTextFormat(
+                            w!("Segoe UI Variable Display"), // Font Family
+                            None,
+                            DWRITE_FONT_WEIGHT_BOLD,    // Weight
+                            DWRITE_FONT_STYLE_NORMAL,   // Style
+                            DWRITE_FONT_STRETCH_NORMAL, // Stretch
+                            20.0,                       // Text Size
+                            w!("en-us"),
+                        )
+                        .unwrap();
+
+                    // --- FONT CONFIGURATION (OK Button) ---
+                    let ok_text_format = DWRITE_FACTORY
+                        .as_ref()
+                        .unwrap()
+                        .CreateTextFormat(
+                            w!("Segoe UI Variable Display"), // Font Family
+                            None,
+                            DWRITE_FONT_WEIGHT_REGULAR, // Weight
+                            DWRITE_FONT_STYLE_NORMAL,   // Style
+                            DWRITE_FONT_STRETCH_NORMAL, // Stretch
+                            15.0,                       // Text Size
+                            w!("en-us"),
+                        )
+                        .unwrap();
+                    let _ = ok_text_format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+                    let _ = ok_text_format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+
+                    let title_u16: Vec<u16> = DIALOG_TITLE.encode_utf16().collect();
+                    rt.DrawText(
+                        &title_u16,
+                        &title_format,
+                        &D2D_RECT_F {
+                            left: padding,
+                            top: 20.0, // Adjusted for title height (SwiftRun Setup)
+                            right: w - padding,
+                            bottom: padding + title_height,
+                        },
+                        &brush,
+                        D2D1_DRAW_TEXT_OPTIONS_NONE,
+                        DWRITE_MEASURING_MODE_NATURAL,
+                    );
+
+                    // --- FONT CONFIGURATION (MESSAGE) ---
+                    let msg_format = DWRITE_FACTORY
+                        .as_ref()
+                        .unwrap()
+                        .CreateTextFormat(
+                            w!("Segoe UI Variable Small"), // Font Family
+                            None,
+                            DWRITE_FONT_WEIGHT_NORMAL, // Weight
+                            DWRITE_FONT_STYLE_NORMAL,
+                            DWRITE_FONT_STRETCH_NORMAL,
+                            15.0, // Text Size
+                            w!("en-us"),
+                        )
+                        .unwrap();
+
+                    let msg_u16: Vec<u16> = DIALOG_MESSAGE.encode_utf16().collect();
+                    rt.DrawText(
+                        &msg_u16,
+                        &msg_format,
+                        &D2D_RECT_F {
+                            left: padding,
+                            top: padding + title_height + 10.0,
+                            right: w - padding,
+                            bottom: h - padding - button_h - 10.0,
+                        },
+                        &brush,
+                        D2D1_DRAW_TEXT_OPTIONS_NONE,
+                        DWRITE_MEASURING_MODE_NATURAL,
+                    );
+
+                    // --- BUTTON CONFIGURATION ---
+                    let btn_rect = D2D_RECT_F {
+                        left: w - padding - button_w,
+                        top: h - padding - button_h,
+                        right: w - padding,
+                        bottom: h - padding,
+                    };
+
+                    let btn_bg = if DIALOG_HOVER_OK {
+                        if is_dark {
+                            D2D1_COLOR_F {
+                                r: 0.3,
+                                g: 0.3,
+                                b: 0.3,
+                                a: 0.8,
+                            }
+                        } else {
+                            D2D1_COLOR_F {
+                                r: 0.9,
+                                g: 0.9,
+                                b: 0.9,
+                                a: 0.8,
+                            }
+                        }
+                    } else {
+                        if is_dark {
+                            D2D1_COLOR_F {
+                                r: 0.2,
+                                g: 0.2,
+                                b: 0.2,
+                                a: 0.5,
+                            }
+                        } else {
+                            D2D1_COLOR_F {
+                                r: 1.0,
+                                g: 1.0,
+                                b: 1.0,
+                                a: 0.5,
+                            }
+                        }
+                    };
+                    let btn_brush = rt.CreateSolidColorBrush(&btn_bg, None).unwrap();
+                    rt.FillRoundedRectangle(
+                        &D2D1_ROUNDED_RECT {
+                            rect: btn_rect,
+                            radiusX: 4.0,
+                            radiusY: 4.0,
+                        },
+                        &btn_brush,
+                    );
+
+                    // OK Button Text Config
+                    let ok_text = [b'O' as u16, b'K' as u16];
+                    rt.DrawText(
+                        &ok_text,
+                        &ok_text_format,
+                        &btn_rect,
+                        &brush,
+                        D2D1_DRAW_TEXT_OPTIONS_NONE,
+                        DWRITE_MEASURING_MODE_NATURAL,
+                    );
+
+                    let _ = rt.EndDraw(None, None);
+                }
+
+                EndPaint(hwnd, &ps);
+                LRESULT(0)
+            }
+            WM_NCHITTEST => {
+                let x = (lp.0 & 0xFFFF) as i16 as i32;
+                let y = ((lp.0 >> 16) & 0xFFFF) as i16 as i32;
+                let mut p = POINT { x, y };
+                ScreenToClient(hwnd, &mut p);
+
+                let scale = get_dpi_scale(hwnd);
+                let sx = p.x as f32 / scale;
+                let sy = p.y as f32 / scale;
+
+                let mut cr = RECT::default();
+                GetClientRect(hwnd, &mut cr);
+                let w = (cr.right - cr.left) as f32 / scale;
+                let h = (cr.bottom - cr.top) as f32 / scale;
+
+                let padding = 24.0;
+                let button_w = 110.0;
+                let button_h = 32.0;
+
+                let btn_rect = D2D_RECT_F {
+                    left: w - padding - button_w,
+                    top: h - padding - button_h,
+                    right: w - padding,
+                    bottom: h - padding,
+                };
+
+                // Allow dragging from anywhere EXCEPT the button
+                if sx >= btn_rect.left
+                    && sx <= btn_rect.right
+                    && sy >= btn_rect.top
+                    && sy <= btn_rect.bottom
+                {
+                    LRESULT(HTCLIENT as isize)
+                } else {
+                    LRESULT(HTCAPTION as isize)
+                }
+            }
+            WM_MOUSEMOVE => {
+                let x = (lp.0 & 0xFFFF) as i16 as f32;
+                let y = ((lp.0 >> 16) & 0xFFFF) as i16 as f32;
+                let scale = get_dpi_scale(hwnd);
+                let sx = x / scale;
+                let sy = y / scale;
+
+                let mut cr = RECT::default();
+                GetClientRect(hwnd, &mut cr);
+                let w = (cr.right - cr.left) as f32 / scale;
+                let h = (cr.bottom - cr.top) as f32 / scale;
+
+                let btn_rect = D2D_RECT_F {
+                    left: w - 120.0,
+                    top: h - 50.0,
+                    right: w - 20.0,
+                    bottom: h - 20.0,
+                };
+
+                let inside = sx >= btn_rect.left
+                    && sx <= btn_rect.right
+                    && sy >= btn_rect.top
+                    && sy <= btn_rect.bottom;
+                if inside != DIALOG_HOVER_OK {
+                    DIALOG_HOVER_OK = inside;
+                    InvalidateRect(hwnd, None, BOOL(0));
+                }
+                LRESULT(0)
+            }
+            WM_LBUTTONDOWN => {
+                if DIALOG_HOVER_OK {
+                    DIALOG_ACTIVE = false;
+                    DestroyWindow(hwnd);
+                }
+                LRESULT(0)
+            }
+            WM_KEYDOWN => {
+                let vk = wp.0 as u32;
+                if vk == VK_RETURN.0 as u32 || vk == VK_ESCAPE.0 as u32 {
+                    DIALOG_ACTIVE = false;
+                    DestroyWindow(hwnd);
+                }
+                LRESULT(0)
+            }
+            WM_CLOSE => {
+                DIALOG_ACTIVE = false;
+                DestroyWindow(hwnd);
+                LRESULT(0)
+            }
+            _ => DefWindowProcW(hwnd, msg, wp, lp),
+        }
+    }
+}
+
+/// Helper function to show a custom Fluent Dialog.
+/// Customize the window dimensions here.
+unsafe fn show_fluent_dialog(title: &str, message: &str) {
+    DIALOG_TITLE = title.to_string();
+    DIALOG_MESSAGE = message.to_string();
+    DIALOG_ACTIVE = true;
+    DIALOG_HOVER_OK = false;
+
+    let instance = GetModuleHandleW(None).unwrap();
+
+    // Get screen center for positioning
+    let screen_w = GetSystemMetrics(SM_CXSCREEN);
+    let screen_h = GetSystemMetrics(SM_CYSCREEN);
+
+    // --- DIALOG WINDOW DIMENSIONS ---
+    let w = 620; // Width in pixels
+    let h = 210; // Height in pixels (increased to accommodate better layout)
+    let x = (screen_w - w) / 2;
+    let y = (screen_h - h) / 2;
+
+    let _hwnd = CreateWindowExW(
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+        w!("SwiftDialog"),
+        w!(""),
+        WS_POPUP | WS_VISIBLE,
+        x,
+        y,
+        w,
+        h,
+        None,
+        None,
+        instance,
+        None,
+    );
+
+    if _hwnd.0 != 0 {
+        SetForegroundWindow(_hwnd);
+        SetFocus(_hwnd);
+    }
+
+    // Process messages until closed
+    let mut msg = MSG::default();
+    while DIALOG_ACTIVE {
+        if GetMessageW(&mut msg, None, 0, 0).as_bool() {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        } else {
+            break;
+        }
+    }
+}
+
 extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
         match msg {
@@ -862,7 +1500,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 LRESULT(0)
             }
             WM_APP_CLOSE => {
-                start_exit_animation(hwnd);
+                start_exit_animation(hwnd, false);
                 LRESULT(0)
             }
             WM_APP_ERROR => {
@@ -875,7 +1513,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 LRESULT(0)
             }
             WM_CLOSE => {
-                start_exit_animation(hwnd);
+                start_exit_animation(hwnd, false);
                 LRESULT(0)
             }
             WM_SIZE => {
@@ -1073,7 +1711,19 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                                     still_animating = true;
                                 } else {
                                     ANIM_TYPE = AnimType::None;
-                                    DestroyWindow(hwnd);
+
+                                    // Ghost Mode Logic:
+                                    // If we are exiting, we check if we should kill process or just hide.
+                                    // However, this logic needs to be robust.
+                                    // Current implementation of 'EXIT_KILL_PROCESS' is global.
+
+                                    if EXIT_KILL_PROCESS {
+                                        PostQuitMessage(0);
+                                    } else {
+                                        // Ghost Mode: Just hide
+                                        ShowWindow(hwnd, SW_HIDE);
+                                        // Reset animation type to prevent loop? Already set to None.
+                                    }
                                 }
                             }
                             _ => {}
@@ -1216,12 +1866,12 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 let sy = y as f32 / scale;
 
                 match hit_test(sx as i32, sy as i32, w, h, is_input_empty()) {
-                    HoverId::Close => start_exit_animation(hwnd),
+                    HoverId::Close => start_exit_animation(hwnd, false),
                     HoverId::Min => {
                         ShowWindow(hwnd, SW_MINIMIZE);
                     }
                     HoverId::Ok => run_command(),
-                    HoverId::Cancel => start_exit_animation(hwnd),
+                    HoverId::Cancel => start_exit_animation(hwnd, false),
                     HoverId::Input => {
                         windows::Win32::UI::Input::KeyboardAndMouse::SetCapture(hwnd);
                         let lx_px = ((sx - (MARGIN + 10.0)) * scale) as i32;
@@ -1333,7 +1983,42 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 LRESULT(0)
             }
 
+            WM_HOTKEY => {
+                // ID 1 is our Win+R hotkey
+                if wp.0 == 1 {
+                    if IsWindowVisible(hwnd).as_bool() {
+                        // If already visible, hide it
+                        start_exit_animation(hwnd, false);
+                    } else {
+                        // Ensure window is shown
+                        ShowWindow(hwnd, SW_SHOW);
+                        SetForegroundWindow(hwnd);
+                        SetFocus(H_EDIT);
+
+                        // Trigger Animation
+                        ANIM_TYPE = AnimType::Entering;
+                        ANIM_START_TIME = Some(Instant::now());
+                        SetTimer(hwnd, 3, 10, None);
+
+                        // Pre-fill input with latest history entry
+                        if let Some(history) = &HISTORY {
+                            if let Some(latest) = history.first() {
+                                if let Ok(mut lock) = INPUT_BUFFER.lock() {
+                                    *lock = latest.clone();
+                                }
+                                let latest_u16: Vec<u16> =
+                                    latest.encode_utf16().chain(std::iter::once(0)).collect();
+                                SetWindowTextW(H_EDIT, PCWSTR(latest_u16.as_ptr()));
+                                SendMessageW(H_EDIT, EM_SETSEL, WPARAM(0), LPARAM(-1));
+                            }
+                        }
+                    }
+                }
+                LRESULT(0)
+            }
+
             WM_DESTROY => {
+                UnregisterHotKey(hwnd, 1);
                 PostQuitMessage(0);
                 LRESULT(0)
             }
