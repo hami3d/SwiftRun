@@ -594,9 +594,9 @@ pub unsafe fn ensure_resources(hwnd: HWND) {
         )
         .unwrap();
     let gray_col = if is_dark {
-        COLOR_DARK_BORDER
+        COLOR_DARK_TEXT_SEC
     } else {
-        COLOR_LIGHT_BORDER
+        COLOR_LIGHT_TEXT_SEC
     };
     let gray = rt
         .CreateSolidColorBrush(
@@ -604,7 +604,7 @@ pub unsafe fn ensure_resources(hwnd: HWND) {
                 r: gray_col,
                 g: gray_col,
                 b: gray_col,
-                a: 0.5,
+                a: 1.0,
             },
             None,
         )
@@ -700,7 +700,7 @@ pub unsafe fn ensure_resources(hwnd: HWND) {
                     r: text_col_val,
                     g: text_col_val,
                     b: text_col_val,
-                    a: 0.4,
+                    a: COLOR_DISABLED_OPACITY,
                 },
                 None,
             )
@@ -727,9 +727,21 @@ pub unsafe fn ensure_resources(hwnd: HWND) {
         btn_border: rt
             .CreateSolidColorBrush(
                 &D2D1_COLOR_F {
-                    r: gray_col,
-                    g: gray_col,
-                    b: gray_col,
+                    r: if is_dark {
+                        COLOR_DARK_BORDER
+                    } else {
+                        COLOR_LIGHT_BORDER
+                    },
+                    g: if is_dark {
+                        COLOR_DARK_BORDER
+                    } else {
+                        COLOR_LIGHT_BORDER
+                    },
+                    b: if is_dark {
+                        COLOR_DARK_BORDER
+                    } else {
+                        COLOR_LIGHT_BORDER
+                    },
                     a: COLOR_BORDER_OPACITY,
                 },
                 None,
