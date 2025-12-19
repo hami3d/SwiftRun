@@ -11,6 +11,7 @@ use windows::Win32::UI::Controls::MARGINS;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
+use crate::config::*;
 use crate::ui::resources::*;
 use crate::ui::*;
 
@@ -52,10 +53,10 @@ pub extern "system" fn dialog_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 let mut ps = PAINTSTRUCT::default();
                 BeginPaint(hwnd, &mut ps);
 
-                let padding = 22.0;
-                let title_height = 15.0;
-                let button_w = 160.0;
-                let button_h = 38.0;
+                let padding = DIALOG_PADDING;
+                let title_height = 15.0; // Keep this as layout logic or move to config if critical
+                let button_w = DIALOG_BTN_W;
+                let button_h = DIALOG_BTN_H;
 
                 let scale = get_dpi_scale(hwnd);
                 let mut cr = RECT::default();
@@ -89,20 +90,16 @@ pub extern "system" fn dialog_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                     }));
 
                     let is_dark = is_dark_mode();
-                    let text_color = if is_dark {
-                        D2D1_COLOR_F {
-                            r: 1.0,
-                            g: 1.0,
-                            b: 1.0,
-                            a: 1.0,
-                        }
+                    let text_val = if is_dark {
+                        COLOR_DARK_TEXT
                     } else {
-                        D2D1_COLOR_F {
-                            r: 0.1,
-                            g: 0.1,
-                            b: 0.1,
-                            a: 1.0,
-                        }
+                        COLOR_LIGHT_TEXT
+                    };
+                    let text_color = D2D1_COLOR_F {
+                        r: text_val,
+                        g: text_val,
+                        b: text_val,
+                        a: 1.0,
                     };
                     let brush = rt.CreateSolidColorBrush(&text_color, None).unwrap();
 
@@ -110,12 +107,12 @@ pub extern "system" fn dialog_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                         .as_ref()
                         .unwrap()
                         .CreateTextFormat(
-                            w!("Segoe UI Variable Display"),
+                            FONT_DISPLAY,
                             None,
                             DWRITE_FONT_WEIGHT_BOLD,
                             DWRITE_FONT_STYLE_NORMAL,
                             DWRITE_FONT_STRETCH_NORMAL,
-                            20.0,
+                            FONT_SZ_DIALOG_TITLE,
                             w!("en-us"),
                         )
                         .unwrap();
@@ -124,12 +121,12 @@ pub extern "system" fn dialog_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                         .as_ref()
                         .unwrap()
                         .CreateTextFormat(
-                            w!("Segoe UI Variable Display"),
+                            FONT_DISPLAY,
                             None,
                             DWRITE_FONT_WEIGHT_REGULAR,
                             DWRITE_FONT_STYLE_NORMAL,
                             DWRITE_FONT_STRETCH_NORMAL,
-                            15.0,
+                            FONT_SZ_DIALOG_BTN,
                             w!("en-us"),
                         )
                         .unwrap();
@@ -155,12 +152,12 @@ pub extern "system" fn dialog_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                         .as_ref()
                         .unwrap()
                         .CreateTextFormat(
-                            w!("Segoe UI Variable Small"),
+                            FONT_SMALL,
                             None,
                             DWRITE_FONT_WEIGHT_NORMAL,
                             DWRITE_FONT_STYLE_NORMAL,
                             DWRITE_FONT_STRETCH_NORMAL,
-                            15.0,
+                            FONT_SZ_DIALOG_MSG,
                             w!("en-us"),
                         )
                         .unwrap();
@@ -187,56 +184,52 @@ pub extern "system" fn dialog_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                         bottom: h - padding,
                     };
                     let btn_bg = if DIALOG_HOVER_OK {
-                        if is_dark {
-                            D2D1_COLOR_F {
-                                r: 0.3,
-                                g: 0.3,
-                                b: 0.3,
-                                a: 0.8,
-                            }
+                        let c = if is_dark {
+                            COLOR_DARK_BTN_HOVER
                         } else {
-                            D2D1_COLOR_F {
-                                r: 0.9,
-                                g: 0.9,
-                                b: 0.9,
-                                a: 0.8,
-                            }
+                            COLOR_LIGHT_BTN_HOVER
+                        };
+                        D2D1_COLOR_F {
+                            r: c,
+                            g: c,
+                            b: c,
+                            a: 0.8,
                         }
                     } else {
-                        if is_dark {
-                            D2D1_COLOR_F {
-                                r: 0.2,
-                                g: 0.2,
-                                b: 0.2,
-                                a: 0.5,
-                            }
+                        let c = if is_dark {
+                            COLOR_DARK_BTN
                         } else {
-                            D2D1_COLOR_F {
-                                r: 1.0,
-                                g: 1.0,
-                                b: 1.0,
-                                a: 0.5,
-                            }
+                            COLOR_LIGHT_BTN
+                        };
+                        D2D1_COLOR_F {
+                            r: c,
+                            g: c,
+                            b: c,
+                            a: 0.5,
                         }
                     };
                     let btn_brush = rt.CreateSolidColorBrush(&btn_bg, None).unwrap();
                     rt.FillRoundedRectangle(
                         &D2D1_ROUNDED_RECT {
                             rect: btn_rect,
-                            radiusX: 4.0,
-                            radiusY: 4.0,
+                            radiusX: CORNER_RADIUS,
+                            radiusY: CORNER_RADIUS,
                         },
                         &btn_brush,
                     );
 
-                    let border_val = if is_dark { 0.6 } else { 0.4 };
+                    let border_val = if is_dark {
+                        COLOR_DARK_BORDER
+                    } else {
+                        COLOR_LIGHT_BORDER
+                    };
                     let border_brush = rt
                         .CreateSolidColorBrush(
                             &D2D1_COLOR_F {
                                 r: border_val,
                                 g: border_val,
                                 b: border_val,
-                                a: 0.1,
+                                a: COLOR_BORDER_OPACITY,
                             },
                             None,
                         )
@@ -244,8 +237,8 @@ pub extern "system" fn dialog_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                     rt.DrawRoundedRectangle(
                         &D2D1_ROUNDED_RECT {
                             rect: btn_rect,
-                            radiusX: 4.0,
-                            radiusY: 4.0,
+                            radiusX: CORNER_RADIUS,
+                            radiusY: CORNER_RADIUS,
                         },
                         &border_brush,
                         1.0,
@@ -281,9 +274,9 @@ pub extern "system" fn dialog_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 let w = (cr.right - cr.left) as f32 / scale;
                 let h = (cr.bottom - cr.top) as f32 / scale;
 
-                let padding = 22.0;
-                let button_w = 160.0;
-                let button_h = 38.0;
+                let padding = DIALOG_PADDING;
+                let button_w = DIALOG_BTN_W;
+                let button_h = DIALOG_BTN_H;
 
                 let btn_rect = D2D_RECT_F {
                     left: w - padding - button_w,
@@ -314,9 +307,9 @@ pub extern "system" fn dialog_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 let w = (cr.right - cr.left) as f32 / scale;
                 let h = (cr.bottom - cr.top) as f32 / scale;
 
-                let padding = 22.0;
-                let button_w = 160.0;
-                let button_h = 38.0;
+                let padding = DIALOG_PADDING;
+                let button_w = DIALOG_BTN_W;
+                let button_h = DIALOG_BTN_H;
 
                 let btn_rect = D2D_RECT_F {
                     left: w - padding - button_w,
@@ -370,8 +363,8 @@ pub unsafe fn show_fluent_dialog(title: &str, message: &str) {
     let screen_w = GetSystemMetrics(SM_CXSCREEN);
     let screen_h = GetSystemMetrics(SM_CYSCREEN);
 
-    let w = 620;
-    let h = 210;
+    let w = DIALOG_W;
+    let h = DIALOG_H;
     let x = (screen_w - w) / 2;
     let y = (screen_h - h) / 2;
 

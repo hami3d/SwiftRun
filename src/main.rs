@@ -5,7 +5,7 @@ use std::fs;
 use std::time::Instant;
 use windows::{
     core::*, Win32::Foundation::*, Win32::Graphics::Direct2D::*, Win32::Graphics::DirectWrite::*,
-    Win32::Graphics::Dwm::*, Win32::Graphics::Gdi::*, Win32::System::Com::*,
+    Win32::Graphics::Dwm::*, Win32::Graphics::Gdi::*, Win32::Media::*, Win32::System::Com::*,
     Win32::System::LibraryLoader::GetModuleHandleW, Win32::UI::HiDpi::SetProcessDpiAwareness,
     Win32::UI::Input::KeyboardAndMouse::*, Win32::UI::WindowsAndMessaging::*,
 };
@@ -27,17 +27,37 @@ use ui::*;
 
 fn main() -> Result<()> {
     unsafe {
-        CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok();
+        let _ = timeBeginPeriod(1);
+        if let Err(e) = CoInitializeEx(None, COINIT_APARTMENTTHREADED) {
+            eprintln!("CoInitializeEx failed: {:?}", e);
+        }
         let _ = SetProcessDpiAwareness(windows::Win32::UI::HiDpi::PROCESS_PER_MONITOR_DPI_AWARE);
 
-        D2D_FACTORY = D2D1CreateFactory(
+        D2D_FACTORY = match D2D1CreateFactory(
             D2D1_FACTORY_TYPE_SINGLE_THREADED,
             Some(&D2D1_FACTORY_OPTIONS::default()),
-        )
-        .ok();
-        DWRITE_FACTORY = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED).ok();
+        ) {
+            Ok(f) => Some(f),
+            Err(e) => {
+                eprintln!("D2D1CreateFactory failed: {:?}", e);
+                None
+            }
+        };
+        DWRITE_FACTORY = match DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED) {
+            Ok(f) => Some(f),
+            Err(e) => {
+                eprintln!("DWriteCreateFactory failed: {:?}", e);
+                None
+            }
+        };
 
-        let instance = GetModuleHandleW(None)?;
+        let instance = match GetModuleHandleW(None) {
+            Ok(h) => h,
+            Err(e) => {
+                eprintln!("GetModuleHandleW failed: {:?}", e);
+                return Err(e.into());
+            }
+        };
         let class_name = w!("SwiftRunClass");
         let dropdown_class_name = w!("SwiftRunDropdown");
         let tooltip_class_name = w!("SwiftRunTooltip");
@@ -64,40 +84,40 @@ fn main() -> Result<()> {
             hIcon: h_icon,
             ..Default::default()
         };
-        RegisterClassW(&wc);
+        let _ = RegisterClassW(&wc);
 
         let wc_dropdown = WNDCLASSW {
             hCursor: LoadCursorW(None, IDC_ARROW).unwrap(),
-            hInstance: instance,
+            hInstance: instance.into(),
             lpszClassName: dropdown_class_name,
             lpfnWndProc: Some(dropdown_wndproc),
             hbrBackground: HBRUSH::default(),
             hIcon: h_icon,
             ..Default::default()
         };
-        RegisterClassW(&wc_dropdown);
+        let _ = RegisterClassW(&wc_dropdown);
 
         let wc_tooltip = WNDCLASSW {
             hCursor: LoadCursorW(None, IDC_ARROW).unwrap(),
-            hInstance: instance,
+            hInstance: instance.into(),
             lpszClassName: tooltip_class_name,
             lpfnWndProc: Some(tooltip_wndproc),
             hbrBackground: HBRUSH::default(),
             hIcon: h_icon,
             ..Default::default()
         };
-        RegisterClassW(&wc_tooltip);
+        let _ = RegisterClassW(&wc_tooltip);
 
         let wc_dialog = WNDCLASSW {
             hCursor: LoadCursorW(None, IDC_ARROW).unwrap(),
-            hInstance: instance,
+            hInstance: instance.into(),
             lpszClassName: dialog_class_name,
             lpfnWndProc: Some(dialog_wndproc),
             hbrBackground: HBRUSH::default(),
             hIcon: h_icon,
             ..Default::default()
         };
-        RegisterClassW(&wc_dialog);
+        let _ = RegisterClassW(&wc_dialog);
 
         let args: Vec<String> = std::env::args().collect();
         if args.len() > 1 {
@@ -107,7 +127,7 @@ fn main() -> Result<()> {
                         "Setup Error",
                         &format!("Failed to install registry hooks: {:?}", e),
                     );
-                    return Err(e);
+                    return Err(e.into());
                 }
                 show_fluent_dialog(
                     "SwiftRun Setup",
@@ -120,7 +140,7 @@ fn main() -> Result<()> {
                         "Setup Error",
                         &format!("Failed to uninstall registry hooks: {:?}", e),
                     );
-                    return Err(e);
+                    return Err(e.into());
                 }
                 show_fluent_dialog(
                     "SwiftRun Setup",
@@ -162,6 +182,12 @@ fn main() -> Result<()> {
             instance,
             None,
         );
+        if hwnd.0 == 0 {
+            let err = GetLastError();
+            eprintln!("CreateWindowExW(main) failed: {:?}", err);
+            return Err(err.into());
+        }
+        H_MAIN = hwnd;
 
         register_hotkeys(hwnd);
 
@@ -207,7 +233,22 @@ fn main() -> Result<()> {
             instance,
             None,
         );
-        let hfont = CreateFontW(20, 0, 0, 0, 400, 0, 0, 0, 0, 0, 0, 0, 0, w!("Segoe UI"));
+        let hfont = CreateFontW(
+            FONT_SZ_INPUT,
+            0,
+            0,
+            0,
+            400,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            FONT_STD,
+        );
         SendMessageW(H_EDIT, WM_SETFONT, WPARAM(hfont.0 as usize), LPARAM(1));
 
         if let Some(history) = &HISTORY {
@@ -236,7 +277,7 @@ fn main() -> Result<()> {
         );
         ANIM_TYPE = AnimType::Entering;
         ANIM_START_TIME = Some(Instant::now());
-        SetTimer(hwnd, 3, 10, None);
+        SetTimer(hwnd, 3, ANIM_TIMER_MS, None);
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).into() {
@@ -274,7 +315,10 @@ fn main() -> Result<()> {
                             SHOW_DROPDOWN = false;
                             ShowWindow(H_DROPDOWN, SW_HIDE);
                         }
-                        show_tooltip("Command History Has Been Cleared");
+                        show_tooltip(
+                            "History Cleared",
+                            "The command history has been successfully removed.",
+                        );
                         let _ = InvalidateRect(hwnd, None, BOOL(0));
                         continue;
                     }
@@ -292,6 +336,7 @@ fn main() -> Result<()> {
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
+        let _ = timeEndPeriod(1);
     }
     Ok(())
 }

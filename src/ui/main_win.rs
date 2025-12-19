@@ -103,7 +103,7 @@ pub unsafe fn start_exit_animation(hwnd: HWND, kill: bool) {
 
     ANIM_TYPE = AnimType::Exiting;
     ANIM_START_TIME = Some(Instant::now());
-    SetTimer(hwnd, 3, 10, None);
+    SetTimer(hwnd, 3, ANIM_TIMER_MS, None);
 }
 
 pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -119,7 +119,7 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
         WM_APP_ERROR => {
             ShowWindow(hwnd, SW_SHOW);
             if let Ok(buf) = INPUT_BUFFER.lock() {
-                show_tooltip(&format!("This Command Doesn't Exist: '{}'!", buf));
+                show_tooltip("Command not found", &format!("SwiftRun cannot find '{}'. Make sure you typed the name correctly, and then try again.", buf));
             }
             LRESULT(0)
         }
@@ -128,6 +128,13 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             LRESULT(0)
         }
         WM_SIZE => {
+            if wp.0 == 1 {
+                // SIZE_MINIMIZED
+                if SHOW_DROPDOWN {
+                    SHOW_DROPDOWN = false;
+                    let _ = ShowWindow(H_DROPDOWN, SW_HIDE);
+                }
+            }
             if let Some(target) = RENDER_TARGET.as_ref() {
                 let size = D2D_SIZE_U {
                     width: (lp.0 & 0xFFFF) as u32,
@@ -367,7 +374,11 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             match hit_test(sx as i32, sy as i32, w, h, is_input_empty()) {
                 HoverId::Close => start_exit_animation(hwnd, false),
                 HoverId::Min => {
-                    ShowWindow(hwnd, SW_MINIMIZE);
+                    if SHOW_DROPDOWN {
+                        SHOW_DROPDOWN = false;
+                        let _ = ShowWindow(H_DROPDOWN, SW_HIDE);
+                    }
+                    let _ = ShowWindow(hwnd, SW_MINIMIZE);
                 }
                 HoverId::Ok => run_command(),
                 HoverId::Cancel => start_exit_animation(hwnd, false),
@@ -392,7 +403,10 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 HoverId::Dropdown => {
                     let is_empty = HISTORY.as_ref().map_or(true, |h| h.is_empty());
                     if is_empty {
-                        show_tooltip("No Command History Found");
+                        show_tooltip(
+                            "History Cleared",
+                            "The command history has been successfully removed.",
+                        );
                     } else {
                         if !SHOW_DROPDOWN {
                             SHOW_DROPDOWN = true;
@@ -406,12 +420,13 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                                 rect.left + margin_px,
                                 rect.top
                                     + ((INPUT_Y + INPUT_H) * scale) as i32
-                                    + (5.0 * scale) as i32,
+                                    + (DROPDOWN_GAP * scale) as i32,
                             );
                             let w = (rect.right - rect.left) - (margin_px * 2);
                             let mut drop_h = 0;
                             if let Some(h) = HISTORY.as_ref() {
-                                drop_h = (h.len().min(5) as f32 * ITEM_H * scale) as i32;
+                                drop_h = (h.len().min(DROPDOWN_MAX_ITEMS) as f32 * ITEM_H * scale)
+                                    as i32;
                             }
                             if drop_h > 0 {
                                 SetWindowPos(
@@ -425,7 +440,7 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                                 );
                                 DROPDOWN_ANIM_START = Some(Instant::now());
                                 DROPDOWN_ANIM_TYPE = AnimType::Entering;
-                                SetTimer(hwnd, 3, 16, None);
+                                SetTimer(hwnd, 3, ANIM_TIMER_MS, None);
                                 UpdateWindow(H_DROPDOWN);
                             } else {
                                 SHOW_DROPDOWN = false;
@@ -434,8 +449,14 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                             SHOW_DROPDOWN = false;
                             DROPDOWN_ANIM_START = Some(Instant::now());
                             DROPDOWN_ANIM_TYPE = AnimType::Exiting;
-                            SetTimer(hwnd, 3, 16, None);
+                            SetTimer(hwnd, 3, ANIM_TIMER_MS, None);
                             let _ = InvalidateRect(hwnd, None, BOOL(0));
+                        }
+                    }
+
+                    if TOOLTIP_ANIM_TYPE != AnimType::None {
+                        if H_TOOLTIP.0 != 0 {
+                            let _ = InvalidateRect(H_TOOLTIP, None, BOOL(0));
                         }
                     }
                 }
@@ -556,19 +577,27 @@ pub unsafe fn ensure_resources(hwnd: HWND) {
     let rt: ID2D1RenderTarget = target.cast().unwrap();
 
     let is_dark = is_dark_mode();
-    let text_col = if is_dark { 1.0 } else { 0.0 };
+    let text_col_val = if is_dark {
+        COLOR_DARK_TEXT
+    } else {
+        COLOR_LIGHT_TEXT
+    };
     let white = rt
         .CreateSolidColorBrush(
             &D2D1_COLOR_F {
-                r: text_col,
-                g: text_col,
-                b: text_col,
+                r: text_col_val,
+                g: text_col_val,
+                b: text_col_val,
                 a: 1.0,
             },
             None,
         )
         .unwrap();
-    let gray_col = if is_dark { 0.6 } else { 0.4 };
+    let gray_col = if is_dark {
+        COLOR_DARK_BORDER
+    } else {
+        COLOR_LIGHT_BORDER
+    };
     let gray = rt
         .CreateSolidColorBrush(
             &D2D1_COLOR_F {
@@ -580,19 +609,27 @@ pub unsafe fn ensure_resources(hwnd: HWND) {
             None,
         )
         .unwrap();
-    let input_bg_col = if is_dark { 0.1 } else { 0.9 };
+    let input_bg_col = if is_dark {
+        COLOR_INPUT_BG_DARK
+    } else {
+        COLOR_INPUT_BG_LIGHT
+    };
     let input_bg = rt
         .CreateSolidColorBrush(
             &D2D1_COLOR_F {
                 r: input_bg_col,
                 g: input_bg_col,
                 b: input_bg_col,
-                a: 0.15,
+                a: COLOR_INPUT_BG_OPACITY,
             },
             None,
         )
         .unwrap();
-    let btn_bg_col = if is_dark { 0.2 } else { 0.94 };
+    let btn_bg_col = if is_dark {
+        COLOR_DARK_BTN
+    } else {
+        COLOR_LIGHT_BTN
+    };
     let btn_bg = rt
         .CreateSolidColorBrush(
             &D2D1_COLOR_F {
@@ -604,7 +641,11 @@ pub unsafe fn ensure_resources(hwnd: HWND) {
             None,
         )
         .unwrap();
-    let btn_hover_col = if is_dark { 0.35 } else { 0.88 };
+    let btn_hover_col = if is_dark {
+        COLOR_DARK_BTN_HOVER
+    } else {
+        COLOR_LIGHT_BTN_HOVER
+    };
     let btn_hover = rt
         .CreateSolidColorBrush(
             &D2D1_COLOR_F {
@@ -619,9 +660,9 @@ pub unsafe fn ensure_resources(hwnd: HWND) {
     let close_hover = rt
         .CreateSolidColorBrush(
             &D2D1_COLOR_F {
-                r: 0.769,
-                g: 0.169,
-                b: 0.11,
+                r: COLOR_DESTRUCTIVE_R,
+                g: COLOR_DESTRUCTIVE_G,
+                b: COLOR_DESTRUCTIVE_B,
                 a: 1.0,
             },
             None,
@@ -635,7 +676,7 @@ pub unsafe fn ensure_resources(hwnd: HWND) {
                 r: ar,
                 g: ag,
                 b: ab,
-                a: 0.9,
+                a: COLOR_ACCENT_OPACITY,
             },
             None,
         )
@@ -643,9 +684,9 @@ pub unsafe fn ensure_resources(hwnd: HWND) {
     let accent_hover = rt
         .CreateSolidColorBrush(
             &D2D1_COLOR_F {
-                r: ar,
-                g: ag,
-                b: ab,
+                r: (ar + COLOR_HOVER_BRIGHTEN).min(1.0),
+                g: (ag + COLOR_HOVER_BRIGHTEN).min(1.0),
+                b: (ab + COLOR_HOVER_BRIGHTEN).min(1.0),
                 a: 1.0,
             },
             None,
@@ -656,9 +697,9 @@ pub unsafe fn ensure_resources(hwnd: HWND) {
         placeholder: rt
             .CreateSolidColorBrush(
                 &D2D1_COLOR_F {
-                    r: text_col,
-                    g: text_col,
-                    b: text_col,
+                    r: text_col_val,
+                    g: text_col_val,
+                    b: text_col_val,
                     a: 0.4,
                 },
                 None,
@@ -683,24 +724,13 @@ pub unsafe fn ensure_resources(hwnd: HWND) {
                 None,
             )
             .unwrap(),
-        input_border: rt
-            .CreateSolidColorBrush(
-                &D2D1_COLOR_F {
-                    r: gray_col,
-                    g: gray_col,
-                    b: gray_col,
-                    a: 0.1,
-                },
-                None,
-            )
-            .unwrap(),
         btn_border: rt
             .CreateSolidColorBrush(
                 &D2D1_COLOR_F {
                     r: gray_col,
                     g: gray_col,
                     b: gray_col,
-                    a: 0.1,
+                    a: COLOR_BORDER_OPACITY,
                 },
                 None,
             )
@@ -753,12 +783,12 @@ pub unsafe fn ensure_fonts() {
 
     let title = dwrite
         .CreateTextFormat(
-            w!("Segoe UI Variable Display"),
+            FONT_DISPLAY,
             None,
             DWRITE_FONT_WEIGHT_REGULAR,
             DWRITE_FONT_STYLE_NORMAL,
             DWRITE_FONT_STRETCH_NORMAL,
-            13.0,
+            FONT_SZ_TITLE,
             w!(""),
         )
         .unwrap();
@@ -767,12 +797,12 @@ pub unsafe fn ensure_fonts() {
 
     let label = dwrite
         .CreateTextFormat(
-            w!("Segoe UI Variable Text"),
+            FONT_TEXT,
             None,
             DWRITE_FONT_WEIGHT_NORMAL,
             DWRITE_FONT_STYLE_NORMAL,
             DWRITE_FONT_STRETCH_NORMAL,
-            12.0,
+            FONT_SZ_LABEL,
             w!(""),
         )
         .unwrap();
@@ -781,12 +811,12 @@ pub unsafe fn ensure_fonts() {
 
     let button = dwrite
         .CreateTextFormat(
-            w!("Segoe UI Variable Text"),
+            FONT_TEXT,
             None,
             DWRITE_FONT_WEIGHT_SEMI_BOLD,
             DWRITE_FONT_STYLE_NORMAL,
             DWRITE_FONT_STRETCH_NORMAL,
-            12.0,
+            FONT_SZ_BUTTON,
             w!(""),
         )
         .unwrap();
@@ -795,23 +825,55 @@ pub unsafe fn ensure_fonts() {
 
     let tooltip = dwrite
         .CreateTextFormat(
-            w!("Segoe UI Variable Text"),
+            FONT_TEXT,
             None,
             DWRITE_FONT_WEIGHT_REGULAR,
             DWRITE_FONT_STYLE_NORMAL,
             DWRITE_FONT_STRETCH_NORMAL,
-            12.0,
+            FONT_SZ_TOOLTIP,
             w!(""),
         )
         .unwrap();
     let _ = tooltip.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-    let _ = tooltip.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    let _ = tooltip.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+    let _ = tooltip.SetWordWrapping(DWRITE_WORD_WRAPPING_EMERGENCY_BREAK);
+
+    let tooltip_bold = dwrite
+        .CreateTextFormat(
+            FONT_TEXT,
+            None,
+            DWRITE_FONT_WEIGHT_BOLD,
+            DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL,
+            FONT_SZ_TOOLTIP_BOLD,
+            w!(""),
+        )
+        .unwrap();
+    let _ = tooltip_bold.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+    let _ = tooltip_bold.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+    let _ = tooltip_bold.SetWordWrapping(DWRITE_WORD_WRAPPING_EMERGENCY_BREAK);
+
+    let icon = dwrite
+        .CreateTextFormat(
+            FONT_TEXT,
+            None,
+            DWRITE_FONT_WEIGHT_BOLD,
+            DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL,
+            TOOLTIP_ICON_SIZE * 0.7,
+            w!(""),
+        )
+        .unwrap();
+    let _ = icon.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+    let _ = icon.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
 
     FONTS = Some(Fonts {
         title,
         label,
         button,
         tooltip,
+        tooltip_bold,
+        icon,
     });
 }
 
@@ -950,14 +1012,46 @@ pub unsafe fn paint() {
             radiusX: CORNER_RADIUS,
             radiusY: CORNER_RADIUS,
         },
-        &b.input_border,
+        &b.accent,
         1.0,
+        None,
+    );
+
+    // Search Icon (Magnifying Glass)
+    let search_icon_x = MARGIN + 12.0;
+    let search_icon_y = INPUT_Y + (INPUT_H - 16.0) / 2.0;
+    let search_brush = &b.accent;
+
+    rt.DrawEllipse(
+        &D2D1_ELLIPSE {
+            point: D2D_POINT_2F {
+                x: search_icon_x + 6.0,
+                y: search_icon_y + 6.0,
+            },
+            radiusX: 5.0,
+            radiusY: 5.0,
+        },
+        search_brush,
+        1.5,
+        None,
+    );
+    rt.DrawLine(
+        D2D_POINT_2F {
+            x: search_icon_x + 10.0,
+            y: search_icon_y + 10.0,
+        },
+        D2D_POINT_2F {
+            x: search_icon_x + 14.0,
+            y: search_icon_y + 14.0,
+        },
+        search_brush,
+        1.5,
         None,
     );
 
     if let Ok(buf) = INPUT_BUFFER.lock() {
         let text_rect = D2D_RECT_F {
-            left: MARGIN + 10.0,
+            left: MARGIN + 35.0,
             top: INPUT_Y + 8.0,
             right: w - MARGIN - 30.0,
             bottom: INPUT_Y + INPUT_H - 8.0,

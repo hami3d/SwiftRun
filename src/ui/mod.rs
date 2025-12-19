@@ -6,6 +6,8 @@ use windows::Win32::Graphics::Dwm::*;
 use windows::Win32::System::Registry::*;
 use windows::Win32::UI::Controls::*;
 
+use crate::config::*;
+
 pub mod dialog;
 pub mod dropdown;
 pub mod main_win;
@@ -23,7 +25,6 @@ pub struct Brushes {
     pub accent: ID2D1SolidColorBrush,
     pub accent_hover: ID2D1SolidColorBrush,
     pub selection: ID2D1SolidColorBrush,
-    pub input_border: ID2D1SolidColorBrush,
     pub btn_border: ID2D1SolidColorBrush,
 }
 
@@ -32,6 +33,8 @@ pub struct Fonts {
     pub label: IDWriteTextFormat,
     pub button: IDWriteTextFormat,
     pub tooltip: IDWriteTextFormat,
+    pub tooltip_bold: IDWriteTextFormat,
+    pub icon: IDWriteTextFormat,
 }
 
 #[repr(C)]
@@ -99,7 +102,11 @@ pub unsafe fn get_accent_color_values() -> (f32, f32, f32) {
         let _ = RegCloseKey(h_key);
     }
     if color == 0 {
-        return (0.0, 0.47, 0.83);
+        return (
+            COLOR_ACCENT_DEFAULT_R,
+            COLOR_ACCENT_DEFAULT_G,
+            COLOR_ACCENT_DEFAULT_B,
+        );
     }
     let r = (color & 0xFF) as f32 / 255.0;
     let g = ((color >> 8) & 0xFF) as f32 / 255.0;
@@ -109,7 +116,11 @@ pub unsafe fn get_accent_color_values() -> (f32, f32, f32) {
 
 pub unsafe fn set_acrylic_effect(hwnd: HWND) {
     let is_dark = is_dark_mode();
-    let gradient_color = if is_dark { 0x00202020 } else { 0x00F3F3F3 };
+    let gradient_color = if is_dark {
+        ACRYLIC_TINT_DARK
+    } else {
+        ACRYLIC_TINT_LIGHT
+    };
 
     let policy = AccentPolicy {
         accent_state: 4, // ACCENT_ENABLE_ACRYLICBLURBEHIND

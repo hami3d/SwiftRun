@@ -93,19 +93,27 @@ pub unsafe fn ensure_dropdown_resources(hwnd: HWND) {
     let rt: ID2D1RenderTarget = target.cast().unwrap();
 
     let is_dark = is_dark_mode();
-    let text_col = if is_dark { 1.0 } else { 0.0 };
+    let text_col_val = if is_dark {
+        COLOR_DARK_TEXT
+    } else {
+        COLOR_LIGHT_TEXT
+    };
     let white = rt
         .CreateSolidColorBrush(
             &D2D1_COLOR_F {
-                r: text_col,
-                g: text_col,
-                b: text_col,
+                r: text_col_val,
+                g: text_col_val,
+                b: text_col_val,
                 a: 1.0,
             },
             None,
         )
         .unwrap();
-    let gray_col = if is_dark { 0.6 } else { 0.4 };
+    let gray_col = if is_dark {
+        COLOR_DARK_BORDER
+    } else {
+        COLOR_LIGHT_BORDER
+    };
     let gray = rt
         .CreateSolidColorBrush(
             &D2D1_COLOR_F {
@@ -128,7 +136,11 @@ pub unsafe fn ensure_dropdown_resources(hwnd: HWND) {
             None,
         )
         .unwrap();
-    let btn_bg_col = if is_dark { 0.2 } else { 0.95 };
+    let btn_bg_col = if is_dark {
+        COLOR_DARK_BTN
+    } else {
+        COLOR_LIGHT_BTN
+    };
     let btn_bg = rt
         .CreateSolidColorBrush(
             &D2D1_COLOR_F {
@@ -140,7 +152,11 @@ pub unsafe fn ensure_dropdown_resources(hwnd: HWND) {
             None,
         )
         .unwrap();
-    let btn_hover_col = if is_dark { 0.35 } else { 0.8 };
+    let btn_hover_col = if is_dark {
+        COLOR_DARK_BTN_HOVER
+    } else {
+        COLOR_LIGHT_BTN_HOVER
+    };
     let btn_hover = rt
         .CreateSolidColorBrush(
             &D2D1_COLOR_F {
@@ -171,7 +187,7 @@ pub unsafe fn ensure_dropdown_resources(hwnd: HWND) {
                 r: ar,
                 g: ag,
                 b: ab,
-                a: 0.9,
+                a: COLOR_ACCENT_OPACITY,
             },
             None,
         )
@@ -179,9 +195,9 @@ pub unsafe fn ensure_dropdown_resources(hwnd: HWND) {
     let accent_hover = rt
         .CreateSolidColorBrush(
             &D2D1_COLOR_F {
-                r: ar,
-                g: ag,
-                b: ab,
+                r: (ar + COLOR_HOVER_BRIGHTEN).min(1.0),
+                g: (ag + COLOR_HOVER_BRIGHTEN).min(1.0),
+                b: (ab + COLOR_HOVER_BRIGHTEN).min(1.0),
                 a: 1.0,
             },
             None,
@@ -192,9 +208,9 @@ pub unsafe fn ensure_dropdown_resources(hwnd: HWND) {
         placeholder: rt
             .CreateSolidColorBrush(
                 &D2D1_COLOR_F {
-                    r: text_col,
-                    g: text_col,
-                    b: text_col,
+                    r: text_col_val,
+                    g: text_col_val,
+                    b: text_col_val,
                     a: 0.4,
                 },
                 None,
@@ -219,24 +235,13 @@ pub unsafe fn ensure_dropdown_resources(hwnd: HWND) {
                 None,
             )
             .unwrap(),
-        input_border: rt
-            .CreateSolidColorBrush(
-                &D2D1_COLOR_F {
-                    r: gray_col,
-                    g: gray_col,
-                    b: gray_col,
-                    a: 0.1,
-                },
-                None,
-            )
-            .unwrap(),
         btn_border: rt
             .CreateSolidColorBrush(
                 &D2D1_COLOR_F {
                     r: gray_col,
                     g: gray_col,
                     b: gray_col,
-                    a: 0.1,
+                    a: COLOR_BORDER_OPACITY,
                 },
                 None,
             )
@@ -349,12 +354,19 @@ pub unsafe extern "system" fn dropdown_wndproc(
                             );
 
                             if let Some(history) = HISTORY.as_ref() {
-                                for (i, item) in
-                                    history.iter().skip(SCROLL_OFFSET).take(5).enumerate()
+                                for (i, item) in history
+                                    .iter()
+                                    .skip(SCROLL_OFFSET)
+                                    .take(DROPDOWN_MAX_ITEMS)
+                                    .enumerate()
                                 {
                                     let item_y = i as f32 * ITEM_H;
                                     let total_items = history.len();
-                                    let scroll_width = if total_items > 5 { 8.0 } else { 0.0 };
+                                    let scroll_width = if total_items > DROPDOWN_MAX_ITEMS {
+                                        8.0
+                                    } else {
+                                        0.0
+                                    };
 
                                     let rect = D2D_RECT_F {
                                         left: 0.0,
@@ -391,8 +403,8 @@ pub unsafe extern "system" fn dropdown_wndproc(
                                 }
 
                                 let total_items = history.len();
-                                if total_items > 5 {
-                                    let ratio = 5.0 / total_items as f32;
+                                if total_items > DROPDOWN_MAX_ITEMS {
+                                    let ratio = DROPDOWN_MAX_ITEMS as f32 / total_items as f32;
                                     let thumb_h = h * ratio;
                                     let thumb_y = (SCROLL_OFFSET as f32 / total_items as f32) * h;
                                     let scroll_rect = D2D_RECT_F {
@@ -461,7 +473,7 @@ pub unsafe extern "system" fn dropdown_wndproc(
         WM_MOUSEMOVE => {
             let y = (lp.0 >> 16) as i16 as f32;
             let idx = (y / ITEM_H) as usize;
-            if idx < 5 {
+            if idx < DROPDOWN_MAX_ITEMS {
                 if HOVER_DROPDOWN != Some(idx) {
                     HOVER_DROPDOWN = Some(idx);
                     let _ = InvalidateRect(hwnd, None, BOOL(0));
@@ -488,13 +500,13 @@ pub unsafe extern "system" fn dropdown_wndproc(
         WM_MOUSEWHEEL => {
             let delta = (wp.0 >> 16) as i16;
             if let Some(history) = HISTORY.as_ref() {
-                if history.len() > 5 {
+                if history.len() > DROPDOWN_MAX_ITEMS {
                     if delta > 0 {
                         if SCROLL_OFFSET > 0 {
                             SCROLL_OFFSET -= 1;
                         }
                     } else {
-                        if SCROLL_OFFSET < history.len() - 5 {
+                        if SCROLL_OFFSET < history.len() - DROPDOWN_MAX_ITEMS {
                             SCROLL_OFFSET += 1;
                         }
                     }
