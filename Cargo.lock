@@ -142,7 +142,7 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
 name = "swift_run"
-version = "0.8.0-beta"
+version = "0.8.3-beta"
 dependencies = [
  "embed-resource",
  "windows",

@@ -441,7 +441,7 @@ pub unsafe extern "system" fn dropdown_wndproc(
                     }
                 }
             }
-            EndPaint(hwnd, &ps);
+            let _ = EndPaint(hwnd, &ps);
             LRESULT(0)
         }
         WM_LBUTTONDOWN => {

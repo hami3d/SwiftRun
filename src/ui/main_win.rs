@@ -91,7 +91,7 @@ pub unsafe fn start_exit_animation(hwnd: HWND, kill: bool) {
         if kill {
             PostQuitMessage(0);
         } else {
-            ShowWindow(hwnd, SW_HIDE);
+            let _ = ShowWindow(hwnd, SW_HIDE);
         }
         return;
     }
@@ -237,7 +237,7 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                                 (elapsed as f32 / ANIM_ENTER_DURATION_MS as f32).min(1.0);
                             let eased = ease_out_cubic(progress);
                             let current_y = START_Y - ((START_Y - FINAL_Y) as f32 * eased) as i32;
-                            SetWindowPos(
+                            let _ = SetWindowPos(
                                 hwnd,
                                 None,
                                 FINAL_X,
@@ -265,7 +265,7 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                             let progress = (elapsed as f32 / ANIM_EXIT_DURATION_MS as f32).min(1.0);
                             let eased = ease_out_quad(progress);
                             let current_y = FINAL_Y + ((START_Y - FINAL_Y) as f32 * eased) as i32;
-                            SetWindowPos(
+                            let _ = SetWindowPos(
                                 hwnd,
                                 None,
                                 FINAL_X,
@@ -513,6 +513,9 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 if IsWindowVisible(hwnd).as_bool() {
                     start_exit_animation(hwnd, false);
                 } else {
+                    unsafe {
+                        update_animation_values(hwnd);
+                    }
                     let _ = ShowWindow(hwnd, SW_SHOW);
                     let _ = SetForegroundWindow(hwnd);
                     let _ = SetFocus(Some(H_EDIT));
@@ -574,22 +577,26 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             let dpi_x = (wp.0 & 0xFFFF) as f32;
             let dpi_y = ((wp.0 >> 16) & 0xFFFF) as f32;
             let rect = &*(lp.0 as *const RECT);
+            let w = rect.right - rect.left;
+            let h = rect.bottom - rect.top;
 
-            if let Some(target) = RENDER_TARGET.as_ref() {
-                target.SetDpi(dpi_x, dpi_y);
-            }
-
-            SetWindowPos(
+            let _ = SetWindowPos(
                 hwnd,
                 None,
                 rect.left,
                 rect.top,
-                rect.right - rect.left,
-                rect.bottom - rect.top,
+                w,
+                h,
                 SWP_NOZORDER | SWP_NOACTIVATE,
-            )
-            .unwrap_or(());
+            );
 
+            if let Some(target) = RENDER_TARGET.as_ref() {
+                target.SetDpi(dpi_x, dpi_y);
+                let _ = target.Resize(&D2D_SIZE_U {
+                    width: w as u32,
+                    height: h as u32,
+                });
+            }
             LRESULT(0)
         }
         _ => DefWindowProcW(hwnd, msg, wp, lp),
@@ -610,12 +617,14 @@ pub unsafe fn ensure_resources(hwnd: HWND) {
             dpiY: dpi,
             ..Default::default()
         };
+        let mut rc = RECT::default();
+        let _ = GetClientRect(hwnd, &mut rc);
+        let width = (rc.right - rc.left) as u32;
+        let height = (rc.bottom - rc.top) as u32;
+
         let hwnd_props = D2D1_HWND_RENDER_TARGET_PROPERTIES {
             hwnd,
-            pixelSize: D2D_SIZE_U {
-                width: WIN_W as u32,
-                height: WIN_H as u32,
-            },
+            pixelSize: D2D_SIZE_U { width, height },
             presentOptions: D2D1_PRESENT_OPTIONS_NONE,
         };
 
@@ -1336,4 +1345,35 @@ pub unsafe fn draw_button(
         D2D1_DRAW_TEXT_OPTIONS_NONE,
         DWRITE_MEASURING_MODE_NATURAL,
     );
+}
+
+unsafe fn update_animation_values(hwnd: HWND) {
+    let scale = get_dpi_scale(hwnd);
+    let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    let mut mi = MONITORINFO::default();
+    mi.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+
+    if GetMonitorInfoW(monitor, &mut mi).as_bool() {
+        let work_area = mi.rcWork;
+        let win_h = (WIN_H * scale) as i32;
+        let margin = (18.0 * scale) as i32;
+
+        let final_y = work_area.bottom - win_h - margin;
+
+        FINAL_Y = final_y;
+        START_Y = work_area.bottom;
+        let final_x = work_area.left + margin;
+        FINAL_X = final_x;
+
+        let mut rect = RECT::default();
+        let _ = GetWindowRect(hwnd, &mut rect);
+        let current_h = rect.bottom - rect.top;
+
+        let final_y = work_area.bottom - current_h - margin;
+
+        FINAL_Y = final_y;
+        START_Y = work_area.bottom;
+        let final_x = work_area.left + margin;
+        FINAL_X = final_x;
+    }
 }

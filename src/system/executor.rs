@@ -85,9 +85,9 @@ pub unsafe fn run_command() {
         CoUninitialize();
 
         if (res.0 as isize) > 32 {
-            PostMessageW(Some(main_hwnd), WM_APP_CLOSE, WPARAM(0), LPARAM(0));
+            let _ = PostMessageW(Some(main_hwnd), WM_APP_CLOSE, WPARAM(0), LPARAM(0));
         } else {
-            PostMessageW(Some(main_hwnd), WM_APP_ERROR, WPARAM(0), LPARAM(0));
+            let _ = PostMessageW(Some(main_hwnd), WM_APP_ERROR, WPARAM(0), LPARAM(0));
         }
     });
 }

@@ -5,7 +5,7 @@ use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 use windows::core::*;
 
-pub unsafe fn restart_explorer() {
+pub unsafe fn kill_processes_by_name(name: &str) {
     let snapshot = match CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) {
         Ok(s) => s,
         Err(_) => return,
@@ -22,7 +22,7 @@ pub unsafe fn restart_explorer() {
                 .unwrap_or(entry.szExeFile.len());
             let exe_name = String::from_utf16_lossy(&entry.szExeFile[..len]);
 
-            if exe_name.eq_ignore_ascii_case("explorer.exe") {
+            if exe_name.eq_ignore_ascii_case(name) {
                 if let Ok(handle) = OpenProcess(PROCESS_TERMINATE, false, entry.th32ProcessID) {
                     let _ = TerminateProcess(handle, 0);
                     let _ = CloseHandle(handle);
@@ -34,5 +34,9 @@ pub unsafe fn restart_explorer() {
         }
     }
     let _ = CloseHandle(snapshot);
+}
+
+pub unsafe fn restart_explorer() {
+    kill_processes_by_name("explorer.exe");
     let _ = ShellExecuteW(None, None, w!("explorer.exe"), None, None, SW_SHOWNORMAL);
 }

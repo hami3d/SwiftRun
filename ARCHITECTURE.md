@@ -26,6 +26,12 @@ This document outlines the organization of the SwiftRun codebase. The project is
 ### `src/data/` (Persistence)
 *   **`history.rs`**: Logic for loading, saving, and managing the persistent command history file, including the history cycling engine.
 
+### 🖥️ Dynamic DPI & Adaptive Layout
+SwiftRun uses a **Physical-Pixel-First** rendering strategy to ensure crispness while maintaining layout consistency:
+*   **Initial Scaling**: On startup, `main.rs` queries the system DPI via `GetDpiForSystem` to scale the initial window dimensions and work-area offsets. This prevents the window from appearing "cut down" or too small on high-res displays.
+*   **Runtime Adaptation**: The `WM_DPICHANGED` handler in `main_win.rs` catches monitor scale changes, resizes the Win32 window, and immediately resizes the Direct2D `HwndRenderTarget` to match, maintaining a 1:1 pixel ratio for maximum sharpness.
+*   **Adaptive Animation**: To avoid "stuttering" or "drifting" targets, `update_animation_values` queries the actual runtime height of the window (`GetWindowRect`) rather than assuming logical constants, ensuring the slide-up animation always stops precisely above the taskbar regardless of the current scaling factor.
+
 ---
 
 ## 🛠️ Development Guidelines

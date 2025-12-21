@@ -138,7 +138,9 @@ fn main() -> Result<()> {
                     "SwiftRun installed! Explorer will now restart to finalize the takeover.",
                 );
                 restart_explorer();
+                return Ok(());
             } else if args[1] == "--uninstall" {
+                kill_processes_by_name("swift_run.exe");
                 if let Err(e) = manage_registry_hooks(false) {
                     show_fluent_dialog(
                         "Setup Error",
@@ -158,15 +160,17 @@ fn main() -> Result<()> {
         load_history();
 
         let mut work_area = RECT::default();
-        SystemParametersInfoW(
+        let _ = SystemParametersInfoW(
             SPI_GETWORKAREA,
             0,
             Some(&mut work_area as *mut _ as *mut _),
             SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
         );
 
-        let x = work_area.left + 18;
-        let y = work_area.bottom - WIN_H as i32 - 18;
+        let dpi = windows::Win32::UI::HiDpi::GetDpiForSystem();
+        let scale = dpi as f32 / 96.0;
+        let x = work_area.left + (18.0 * scale) as i32;
+        let y = work_area.bottom - (WIN_H * scale) as i32 - (18.0 * scale) as i32;
 
         FINAL_X = x;
         FINAL_Y = y;
@@ -179,8 +183,8 @@ fn main() -> Result<()> {
             WS_POPUP,
             x,
             START_Y,
-            WIN_W as i32,
-            WIN_H as i32,
+            (WIN_W * scale) as i32,
+            (WIN_H * scale) as i32,
             None,
             None,
             Some(instance.into()),
@@ -272,7 +276,7 @@ fn main() -> Result<()> {
                 }
                 let latest_u16: Vec<u16> =
                     latest.encode_utf16().chain(std::iter::once(0)).collect();
-                SetWindowTextW(H_EDIT, PCWSTR(latest_u16.as_ptr()));
+                let _ = SetWindowTextW(H_EDIT, PCWSTR(latest_u16.as_ptr()));
                 SendMessageW(
                     H_EDIT,
                     windows::Win32::UI::Controls::EM_SETSEL,
@@ -329,7 +333,7 @@ fn main() -> Result<()> {
                         HISTORY_INDEX = -1;
                         if SHOW_DROPDOWN {
                             SHOW_DROPDOWN = false;
-                            ShowWindow(H_DROPDOWN, SW_HIDE);
+                            let _ = ShowWindow(H_DROPDOWN, SW_HIDE);
                         }
                         show_tooltip(
                             "History Cleared",
@@ -339,7 +343,7 @@ fn main() -> Result<()> {
                         continue;
                     }
                     if vk == VK_RETURN.0 as i32 {
-                        PostMessageW(Some(hwnd), WM_APP_RUN_COMMAND, WPARAM(0), LPARAM(0));
+                        let _ = PostMessageW(Some(hwnd), WM_APP_RUN_COMMAND, WPARAM(0), LPARAM(0));
                         continue;
                     }
                 }
@@ -349,7 +353,7 @@ fn main() -> Result<()> {
                 start_exit_animation(hwnd, false);
                 continue;
             }
-            TranslateMessage(&msg);
+            let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
         let _ = timeEndPeriod(1);

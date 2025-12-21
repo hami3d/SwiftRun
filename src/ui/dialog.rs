@@ -63,7 +63,7 @@ pub extern "system" fn dialog_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
 
                 let scale = get_dpi_scale(hwnd);
                 let mut cr = RECT::default();
-                GetClientRect(hwnd, &mut cr);
+                let _ = GetClientRect(hwnd, &mut cr);
                 let w = (cr.right - cr.left) as f32 / scale;
                 let h = (cr.bottom - cr.top) as f32 / scale;
 
@@ -277,7 +277,7 @@ pub extern "system" fn dialog_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 let sy = p.y as f32 / scale;
 
                 let mut cr = RECT::default();
-                GetClientRect(hwnd, &mut cr);
+                let _ = GetClientRect(hwnd, &mut cr);
                 let w = (cr.right - cr.left) as f32 / scale;
                 let h = (cr.bottom - cr.top) as f32 / scale;
 
@@ -310,7 +310,7 @@ pub extern "system" fn dialog_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 let sy = y / scale;
 
                 let mut cr = RECT::default();
-                GetClientRect(hwnd, &mut cr);
+                let _ = GetClientRect(hwnd, &mut cr);
                 let w = (cr.right - cr.left) as f32 / scale;
                 let h = (cr.bottom - cr.top) as f32 / scale;
 

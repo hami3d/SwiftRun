@@ -111,7 +111,7 @@ pub unsafe fn cycle_history(delta: isize, h_edit: HWND) {
         .encode_utf16()
         .chain(std::iter::once(0))
         .collect();
-    SetWindowTextW(h_edit, PCWSTR(text_u16.as_ptr()));
+    let _ = SetWindowTextW(h_edit, PCWSTR(text_u16.as_ptr()));
 
     // Also select all
     SendMessageW(h_edit, EM_SETSEL, Some(WPARAM(0)), Some(LPARAM(-1)));

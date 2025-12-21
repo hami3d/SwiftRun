@@ -9,8 +9,8 @@ use std::sync::OnceLock;
 // ----------------------------------------------------------------------------------
 //  WINDOW DIMENSIONS & LAYOUT
 // ----------------------------------------------------------------------------------
-pub const WIN_W: f32 = 540.0;
-pub const WIN_H: f32 = 180.0;
+pub const WIN_W: f32 = 450.0;
+pub const WIN_H: f32 = 150.0;
 pub const CORNER_RADIUS: f32 = 5.0; // Main window corner radius
 pub const MARGIN: f32 = 16.0; // Global margin
 pub const TITLE_BAR_H: f32 = 32.0;
