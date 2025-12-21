@@ -1,10 +1,13 @@
 # ⚡ SwiftRun
 
-**A Better Modern Version of the Windows 11 Run dialog reimagined.**
+**Blazing Fast Windows 11 Run Written in Rust**
 
 ![SwiftRun](res/Swift_Run.png)
 
-This is a High Performance Rust Based Windows 11 Run Dialog Replacement with Modern UI and Hardware Accelerated Rendering with the Use of Win32 API. Written mostly with the help of Agentic AI and *"Vibe Coding"* in a couple of days, **proving even Microsoft doesn't know how to use AI right!**
+This is a High Performance Rust Based Windows 11 Run Dialog Replacement with Modern UI and Hardware Accelerated Rendering with the Use of Win32 API. Written mostly with the help of Agentic AI and *"Vibe Coding"* in a couple of days.
+```
+### **proving even Microsoft doesn't know how to use AI right!**
+```
 
 **Still in Beta Stage!**
 I'm using Windows 11 25H2 and tested it here, so submit an issue if you have any with other versions of Windows 11.
