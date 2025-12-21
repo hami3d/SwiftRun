@@ -1,10 +1,12 @@
 use std::time::Instant;
-use windows::core::*;
 use windows::Win32::Foundation::*;
+use windows::core::*;
+
 use windows::Win32::Graphics::Direct2D::Common::*;
 use windows::Win32::Graphics::Direct2D::*;
 use windows::Win32::Graphics::DirectWrite::*;
-use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
+use windows::Win32::Graphics::Dxgi::Common::*;
+
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::Graphics::Imaging::*;
 use windows::Win32::System::Com::*;
@@ -14,6 +16,7 @@ use windows::Win32::UI::Controls::*;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
+use windows_numerics::Vector2 as D2D_POINT_2F;
 
 use crate::animations::*;
 use crate::config::*;
@@ -95,16 +98,16 @@ pub unsafe fn start_exit_animation(hwnd: HWND, kill: bool) {
 
     if SHOW_DROPDOWN {
         SHOW_DROPDOWN = false;
-        ShowWindow(H_DROPDOWN, SW_HIDE);
+        let _ = ShowWindow(H_DROPDOWN, SW_HIDE);
     }
-    if H_TOOLTIP.0 != 0 {
+    if !H_TOOLTIP.0.is_null() {
         let _ = DestroyWindow(H_TOOLTIP);
-        H_TOOLTIP = HWND(0);
+        H_TOOLTIP = HWND(std::ptr::null_mut());
     }
 
     ANIM_TYPE = AnimType::Exiting;
     ANIM_START_TIME = Some(Instant::now());
-    SetTimer(hwnd, 3, ANIM_TIMER_MS, None);
+    SetTimer(Some(hwnd), 3, ANIM_TIMER_MS, None);
 }
 
 pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -118,9 +121,15 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             LRESULT(0)
         }
         WM_APP_ERROR => {
-            ShowWindow(hwnd, SW_SHOW);
+            let _ = ShowWindow(hwnd, SW_SHOW);
             if let Ok(buf) = INPUT_BUFFER.lock() {
-                show_tooltip("Command not found", &format!("SwiftRun cannot find '{}'. Make sure you typed the name correctly, and then try again.", buf));
+                show_tooltip(
+                    "Command not found",
+                    &format!(
+                        "SwiftRun cannot find '{}'. Make sure you typed the name correctly, and then try again.",
+                        buf
+                    ),
+                );
             }
             LRESULT(0)
         }
@@ -153,19 +162,19 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 50,
                 SWP_NOZORDER | SWP_NOACTIVATE,
             );
-            let _ = InvalidateRect(hwnd, None, BOOL(0));
+            let _ = InvalidateRect(Some(hwnd), None, false);
             LRESULT(0)
         }
         WM_ACTIVATE => {
             if wp.0 == 0 {
                 if SHOW_DROPDOWN {
                     SHOW_DROPDOWN = false;
-                    ShowWindow(H_DROPDOWN, SW_HIDE);
-                    let _ = InvalidateRect(hwnd, None, BOOL(0));
+                    let _ = ShowWindow(H_DROPDOWN, SW_HIDE);
+                    let _ = InvalidateRect(Some(hwnd), None, false);
                 }
             } else {
-                SetFocus(H_EDIT);
-                SendMessageW(H_EDIT, EM_SETSEL, WPARAM(0), LPARAM(-1));
+                SetFocus(Some(H_EDIT));
+                SendMessageW(H_EDIT, EM_SETSEL, Some(WPARAM(0)), Some(LPARAM(-1)));
             }
             LRESULT(0)
         }
@@ -188,7 +197,7 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
         }
         WM_SETCURSOR => {
             if HOVER == HoverId::Input {
-                let _ = SetCursor(LoadCursorW(None, IDC_IBEAM).unwrap());
+                let _ = SetCursor(Some(LoadCursorW(None, IDC_IBEAM).unwrap()));
                 LRESULT(1)
             } else {
                 DefWindowProcW(hwnd, msg, wp, lp)
@@ -200,16 +209,16 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             if is_dark {
                 SetTextColor(hdc, COLORREF(0x00FFFFFF));
                 SetBkColor(hdc, COLORREF(0x002C2C2C));
-                static mut DARK_BRUSH: HBRUSH = HBRUSH(0);
-                if DARK_BRUSH.0 == 0 {
+                static mut DARK_BRUSH: HBRUSH = HBRUSH(std::ptr::null_mut());
+                if DARK_BRUSH.0.is_null() {
                     DARK_BRUSH = CreateSolidBrush(COLORREF(0x002C2C2C));
                 }
                 LRESULT(DARK_BRUSH.0 as isize)
             } else {
                 SetTextColor(hdc, COLORREF(0x00000000));
                 SetBkColor(hdc, COLORREF(0x00FFFFFF));
-                static mut LIGHT_BRUSH: HBRUSH = HBRUSH(0);
-                if LIGHT_BRUSH.0 == 0 {
+                static mut LIGHT_BRUSH: HBRUSH = HBRUSH(std::ptr::null_mut());
+                if LIGHT_BRUSH.0.is_null() {
                     LIGHT_BRUSH = CreateSolidBrush(COLORREF(0x00FFFFFF));
                 }
                 LRESULT(LIGHT_BRUSH.0 as isize)
@@ -217,7 +226,7 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
         }
         WM_TIMER => {
             if wp.0 == 1 {
-                let _ = InvalidateRect(hwnd, None, BOOL(0));
+                let _ = InvalidateRect(Some(hwnd), None, false);
             } else if wp.0 == 3 {
                 let mut still_animating = false;
                 if let Some(start) = ANIM_START_TIME {
@@ -272,7 +281,7 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                                 if EXIT_KILL_PROCESS {
                                     PostQuitMessage(0);
                                 } else {
-                                    ShowWindow(hwnd, SW_HIDE);
+                                    let _ = ShowWindow(hwnd, SW_HIDE);
                                 }
                             }
                         }
@@ -285,12 +294,12 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                     if progress < 1.0 {
                         still_animating = true;
                     } else if DROPDOWN_ANIM_TYPE == AnimType::Exiting {
-                        ShowWindow(H_DROPDOWN, SW_HIDE);
+                        let _ = ShowWindow(H_DROPDOWN, SW_HIDE);
                         DROPDOWN_ANIM_TYPE = AnimType::None;
                     } else {
                         DROPDOWN_ANIM_TYPE = AnimType::None;
                     }
-                    let _ = InvalidateRect(H_DROPDOWN, None, BOOL(0));
+                    let _ = InvalidateRect(Some(H_DROPDOWN), None, false);
                 }
                 if let Some(start) = TOOLTIP_ANIM_START {
                     let elapsed = start.elapsed().as_millis();
@@ -299,15 +308,15 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                         still_animating = true;
                     } else if TOOLTIP_ANIM_TYPE == AnimType::Exiting {
                         let _ = DestroyWindow(H_TOOLTIP);
-                        H_TOOLTIP = HWND(0);
+                        H_TOOLTIP = HWND(std::ptr::null_mut());
                         TOOLTIP_ANIM_TYPE = AnimType::None;
                     } else {
                         TOOLTIP_ANIM_TYPE = AnimType::None;
                     }
-                    let _ = InvalidateRect(H_TOOLTIP, None, BOOL(0));
+                    let _ = InvalidateRect(Some(H_TOOLTIP), None, false);
                 }
                 if !still_animating {
-                    KillTimer(hwnd, 3);
+                    let _ = KillTimer(Some(hwnd), 3);
                 }
             } else if wp.0 == 4 {
                 // Heartbeat: re-register hotkeys just in case
@@ -318,13 +327,13 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
         WM_SETTINGCHANGE => {
             set_acrylic_effect(hwnd);
             BRUSHES = None;
-            let _ = InvalidateRect(hwnd, None, BOOL(0));
+            let _ = InvalidateRect(Some(hwnd), None, false);
             LRESULT(0)
         }
         WM_DISPLAYCHANGE => {
             // Screen resolution or monitor change might affect window environment
             register_hotkeys(hwnd);
-            let _ = InvalidateRect(hwnd, None, BOOL(0));
+            let _ = InvalidateRect(Some(hwnd), None, false);
             LRESULT(0)
         }
         WM_MOUSEMOVE => {
@@ -340,15 +349,15 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             let new_hover = hit_test(sx as i32, sy as i32, w, h, is_input_empty());
             if new_hover != HOVER {
                 HOVER = new_hover;
-                let _ = InvalidateRect(hwnd, None, BOOL(0));
+                let _ = InvalidateRect(Some(hwnd), None, false);
             }
             if wp.0 & 0x0001 != 0 {
                 let n_lp = LPARAM(
                     (((sx - (MARGIN + 10.0)) * scale) as i32 as isize & 0xFFFF)
                         | (((20.0 * scale) as i32 as isize & 0xFFFF) << 16),
                 );
-                SendMessageW(H_EDIT, WM_MOUSEMOVE, wp, n_lp);
-                let _ = InvalidateRect(hwnd, None, BOOL(0));
+                SendMessageW(H_EDIT, WM_MOUSEMOVE, Some(wp), Some(n_lp));
+                let _ = InvalidateRect(Some(hwnd), None, false);
             }
             LRESULT(0)
         }
@@ -360,14 +369,14 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                     & 0xFFFF)
                     | (((20.0 * get_dpi_scale(hwnd)) as i32 as isize & 0xFFFF) << 16),
             );
-            SendMessageW(H_EDIT, WM_LBUTTONUP, wp, n_lp);
-            let _ = InvalidateRect(hwnd, None, BOOL(0));
+            SendMessageW(H_EDIT, WM_LBUTTONUP, Some(wp), Some(n_lp));
+            let _ = InvalidateRect(Some(hwnd), None, false);
             LRESULT(0)
         }
         WM_LBUTTONDOWN => {
-            if H_TOOLTIP.0 != 0 {
+            if !H_TOOLTIP.0.is_null() {
                 let _ = DestroyWindow(H_TOOLTIP);
-                H_TOOLTIP = HWND(0);
+                H_TOOLTIP = HWND(std::ptr::null_mut());
             }
             let scale = get_dpi_scale(hwnd);
             let (sx, sy) = (
@@ -398,16 +407,16 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                         (((sx - (MARGIN + 10.0)) * scale) as i32 as isize & 0xFFFF)
                             | (((20.0 * scale) as i32 as isize & 0xFFFF) << 16),
                     );
-                    SendMessageW(H_EDIT, WM_LBUTTONDOWN, wp, n_lp);
-                    SetFocus(H_EDIT);
-                    let _ = InvalidateRect(hwnd, None, BOOL(0));
+                    SendMessageW(H_EDIT, WM_LBUTTONDOWN, Some(wp), Some(n_lp));
+                    SetFocus(Some(H_EDIT));
+                    let _ = InvalidateRect(Some(hwnd), None, false);
                 }
                 HoverId::None => {
-                    SetFocus(H_EDIT);
+                    SetFocus(Some(H_EDIT));
                     if SHOW_DROPDOWN {
                         SHOW_DROPDOWN = false;
                         ShowWindow(H_DROPDOWN, SW_HIDE);
-                        let _ = InvalidateRect(hwnd, None, BOOL(0));
+                        let _ = InvalidateRect(Some(hwnd), None, false);
                     }
                 }
                 HoverId::Dropdown => {
@@ -441,7 +450,7 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                             if drop_h > 0 {
                                 SetWindowPos(
                                     H_DROPDOWN,
-                                    HWND_TOPMOST,
+                                    Some(HWND_TOPMOST),
                                     x,
                                     y,
                                     w,
@@ -450,23 +459,21 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                                 );
                                 DROPDOWN_ANIM_START = Some(Instant::now());
                                 DROPDOWN_ANIM_TYPE = AnimType::Entering;
-                                SetTimer(hwnd, 3, ANIM_TIMER_MS, None);
-                                UpdateWindow(H_DROPDOWN);
+                                SetTimer(Some(hwnd), 3, ANIM_TIMER_MS, None);
+                                SHOW_DROPDOWN = false;
                             } else {
                                 SHOW_DROPDOWN = false;
+                                DROPDOWN_ANIM_START = Some(Instant::now());
+                                DROPDOWN_ANIM_TYPE = AnimType::Exiting;
+                                SetTimer(Some(hwnd), 3, ANIM_TIMER_MS, None);
+                                let _ = InvalidateRect(Some(hwnd), None, false);
                             }
-                        } else {
-                            SHOW_DROPDOWN = false;
-                            DROPDOWN_ANIM_START = Some(Instant::now());
-                            DROPDOWN_ANIM_TYPE = AnimType::Exiting;
-                            SetTimer(hwnd, 3, ANIM_TIMER_MS, None);
-                            let _ = InvalidateRect(hwnd, None, BOOL(0));
                         }
                     }
 
                     if TOOLTIP_ANIM_TYPE != AnimType::None {
-                        if H_TOOLTIP.0 != 0 {
-                            let _ = InvalidateRect(H_TOOLTIP, None, BOOL(0));
+                        if !H_TOOLTIP.0.is_null() {
+                            let _ = InvalidateRect(Some(H_TOOLTIP), None, false);
                         }
                     }
                 }
@@ -485,7 +492,7 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 if let Ok(mut lock) = INPUT_BUFFER.lock() {
                     *lock = String::from_utf16_lossy(&buf[..len as usize]);
                 }
-                let _ = InvalidateRect(hwnd, None, BOOL(0));
+                let _ = InvalidateRect(Some(hwnd), None, false);
             }
             LRESULT(0)
         }
@@ -498,7 +505,7 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             LRESULT(0)
         }
         WM_SETFOCUS => {
-            SetFocus(H_EDIT);
+            SetFocus(Some(H_EDIT));
             LRESULT(0)
         }
         WM_HOTKEY => {
@@ -506,12 +513,12 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 if IsWindowVisible(hwnd).as_bool() {
                     start_exit_animation(hwnd, false);
                 } else {
-                    ShowWindow(hwnd, SW_SHOW);
+                    let _ = ShowWindow(hwnd, SW_SHOW);
                     SetForegroundWindow(hwnd);
-                    SetFocus(H_EDIT);
+                    SetFocus(Some(H_EDIT));
                     ANIM_TYPE = AnimType::Entering;
                     ANIM_START_TIME = Some(Instant::now());
-                    SetTimer(hwnd, 3, 10, None);
+                    SetTimer(Some(hwnd), 3, 10, None);
                     if let Some(history) = &HISTORY {
                         if let Some(latest) = history.first() {
                             if let Ok(mut lock) = INPUT_BUFFER.lock() {
@@ -520,7 +527,7 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                             let latest_u16: Vec<u16> =
                                 latest.encode_utf16().chain(std::iter::once(0)).collect();
                             SetWindowTextW(H_EDIT, PCWSTR(latest_u16.as_ptr()));
-                            SendMessageW(H_EDIT, EM_SETSEL, WPARAM(0), LPARAM(-1));
+                            SendMessageW(H_EDIT, EM_SETSEL, Some(WPARAM(0)), Some(LPARAM(-1)));
                         }
                     }
                 }
@@ -553,11 +560,11 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             if !SHOW_DROPDOWN {
                 if vk == VK_UP.0 {
                     cycle_history(-1, H_EDIT);
-                    let _ = InvalidateRect(hwnd, None, BOOL(0));
+                    let _ = InvalidateRect(Some(hwnd), None, false);
                     return LRESULT(0);
                 } else if vk == VK_DOWN.0 {
                     cycle_history(1, H_EDIT);
-                    let _ = InvalidateRect(hwnd, None, BOOL(0));
+                    let _ = InvalidateRect(Some(hwnd), None, false);
                     return LRESULT(0);
                 }
             }
@@ -782,7 +789,7 @@ pub unsafe fn ensure_resources(hwnd: HWND) {
     if APP_ICON_BITMAP.is_none() {
         if let Some(wic_factory) = &WIC_FACTORY {
             let icon_handle = LoadImageW(
-                GetModuleHandleW(None).unwrap(),
+                Some(GetModuleHandleW(None).unwrap().into()),
                 w!("icon.ico"),
                 IMAGE_ICON,
                 32,
@@ -948,12 +955,12 @@ pub unsafe fn paint() {
     let cy = TITLE_BAR_H / 2.0;
     rt.DrawLine(
         D2D_POINT_2F {
-            x: min_x + 18.0,
-            y: cy,
+            X: min_x + 18.0,
+            Y: cy,
         },
         D2D_POINT_2F {
-            x: min_x + 28.0,
-            y: cy,
+            X: min_x + 28.0,
+            Y: cy,
         },
         &b.white,
         1.0,
@@ -975,12 +982,12 @@ pub unsafe fn paint() {
     let cx = close_x + WIN_BTN_W / 2.2;
     rt.DrawLine(
         D2D_POINT_2F {
-            x: cx - 5.0,
-            y: cy - 5.0,
+            X: cx - 5.0,
+            Y: cy - 5.0,
         },
         D2D_POINT_2F {
-            x: cx + 5.0,
-            y: cy + 5.0,
+            X: cx + 5.0,
+            Y: cy + 5.0,
         },
         &b.white,
         0.8,
@@ -988,12 +995,12 @@ pub unsafe fn paint() {
     );
     rt.DrawLine(
         D2D_POINT_2F {
-            x: cx + 5.0,
-            y: cy - 5.0,
+            X: cx + 5.0,
+            Y: cy - 5.0,
         },
         D2D_POINT_2F {
-            x: cx - 5.0,
-            y: cy + 5.0,
+            X: cx - 5.0,
+            Y: cy + 5.0,
         },
         &b.white,
         0.8,
@@ -1063,8 +1070,8 @@ pub unsafe fn paint() {
     rt.DrawEllipse(
         &D2D1_ELLIPSE {
             point: D2D_POINT_2F {
-                x: search_icon_x + 6.0,
-                y: search_icon_y + 6.0,
+                X: search_icon_x + 6.0,
+                Y: search_icon_y + 6.0,
             },
             radiusX: 5.0,
             radiusY: 5.0,
@@ -1075,12 +1082,12 @@ pub unsafe fn paint() {
     );
     rt.DrawLine(
         D2D_POINT_2F {
-            x: search_icon_x + 10.0,
-            y: search_icon_y + 10.0,
+            X: search_icon_x + 10.0,
+            Y: search_icon_y + 10.0,
         },
         D2D_POINT_2F {
-            x: search_icon_x + 14.0,
-            y: search_icon_y + 14.0,
+            X: search_icon_x + 14.0,
+            Y: search_icon_y + 14.0,
         },
         search_brush,
         1.5,
@@ -1106,8 +1113,8 @@ pub unsafe fn paint() {
                     let _ = layout.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
                     rt.DrawTextLayout(
                         D2D_POINT_2F {
-                            x: text_rect.left,
-                            y: text_rect.top,
+                            X: text_rect.left,
+                            Y: text_rect.top,
                         },
                         &layout,
                         &b.placeholder,
@@ -1125,7 +1132,7 @@ pub unsafe fn paint() {
                     text_rect.bottom - text_rect.top,
                 ) {
                     let _ = layout.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-                    let lresult = SendMessageW(H_EDIT, EM_GETSEL, WPARAM(0), LPARAM(0));
+                    let lresult = SendMessageW(H_EDIT, EM_GETSEL, Some(WPARAM(0)), Some(LPARAM(0)));
                     let (start, end) = (
                         (lresult.0 & 0xFFFF) as u32,
                         ((lresult.0 >> 16) & 0xFFFF) as u32,
@@ -1147,8 +1154,8 @@ pub unsafe fn paint() {
                     }
                     rt.DrawTextLayout(
                         D2D_POINT_2F {
-                            x: text_rect.left,
-                            y: text_rect.top,
+                            X: text_rect.left,
+                            Y: text_rect.top,
                         },
                         &layout,
                         &b.white,
@@ -1177,8 +1184,8 @@ pub unsafe fn paint() {
                         SendMessageW(
                             H_EDIT,
                             EM_GETSEL,
-                            WPARAM(&mut start as *mut _ as usize),
-                            LPARAM(&mut end as *mut _ as isize),
+                            Some(WPARAM(&mut start as *mut _ as usize)),
+                            Some(LPARAM(&mut end as *mut _ as isize)),
                         );
                         let (mut x, mut y, mut m) = (0.0, 0.0, std::mem::zeroed());
                         let _ =
@@ -1193,12 +1200,12 @@ pub unsafe fn paint() {
             };
             rt.DrawLine(
                 D2D_POINT_2F {
-                    x: cursor_x,
-                    y: text_rect.top,
+                    X: cursor_x,
+                    Y: text_rect.top,
                 },
                 D2D_POINT_2F {
-                    x: cursor_x,
-                    y: text_rect.bottom,
+                    X: cursor_x,
+                    Y: text_rect.bottom,
                 },
                 &b.white,
                 1.5,
@@ -1210,19 +1217,19 @@ pub unsafe fn paint() {
     let (cx, cy) = (w - MARGIN - 20.0, INPUT_Y + INPUT_H / 2.0);
     rt.DrawLine(
         D2D_POINT_2F {
-            x: cx - 4.0,
-            y: cy - 2.0,
+            X: cx - 4.0,
+            Y: cy - 2.0,
         },
-        D2D_POINT_2F { x: cx, y: cy + 2.0 },
+        D2D_POINT_2F { X: cx, Y: cy + 2.0 },
         &b.white,
         1.0,
         None,
     );
     rt.DrawLine(
-        D2D_POINT_2F { x: cx, y: cy + 2.0 },
+        D2D_POINT_2F { X: cx, Y: cy + 2.0 },
         D2D_POINT_2F {
-            x: cx + 4.0,
-            y: cy - 2.0,
+            X: cx + 4.0,
+            Y: cy - 2.0,
         },
         &b.white,
         1.0,

@@ -1,10 +1,10 @@
-use windows::core::*;
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Direct2D::*;
 use windows::Win32::Graphics::DirectWrite::*;
 use windows::Win32::Graphics::Dwm::*;
 use windows::Win32::System::Registry::*;
 use windows::Win32::UI::Controls::*;
+use windows::core::*;
 
 use crate::config::*;
 
@@ -59,7 +59,7 @@ pub unsafe fn is_dark_mode() -> bool {
     if RegOpenKeyExW(
         HKEY_CURRENT_USER,
         w!("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"),
-        0,
+        Some(0),
         KEY_READ,
         &mut h_key,
     )
@@ -85,7 +85,7 @@ pub unsafe fn get_accent_color_values() -> (f32, f32, f32) {
     if RegOpenKeyExW(
         HKEY_CURRENT_USER,
         w!("Software\\Microsoft\\Windows\\DWM"),
-        0,
+        Some(0),
         KEY_READ,
         &mut h_key,
     )
@@ -160,11 +160,7 @@ pub unsafe fn set_acrylic_effect(hwnd: HWND) {
 pub unsafe fn get_dpi_scale(hwnd: HWND) -> f32 {
     use windows::Win32::UI::HiDpi::GetDpiForWindow;
     let dpi = GetDpiForWindow(hwnd);
-    if dpi == 0 {
-        1.0
-    } else {
-        dpi as f32 / 96.0
-    }
+    if dpi == 0 { 1.0 } else { dpi as f32 / 96.0 }
 }
 
 // Re-exports

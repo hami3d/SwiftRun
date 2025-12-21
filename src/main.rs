@@ -1,15 +1,16 @@
-﻿#![allow(static_mut_refs)]
+﻿#![allow(unsafe_op_in_unsafe_fn)]
+#![allow(static_mut_refs)]
 #![allow(non_snake_case)]
 #![windows_subsystem = "windows"]
 
 use std::fs;
 use std::time::Instant;
 use windows::{
-    core::*, Win32::Foundation::*, Win32::Graphics::Direct2D::*, Win32::Graphics::DirectWrite::*,
+    Win32::Foundation::*, Win32::Graphics::Direct2D::*, Win32::Graphics::DirectWrite::*,
     Win32::Graphics::Dwm::*, Win32::Graphics::Gdi::*, Win32::Media::*, Win32::System::Com::*,
     Win32::System::LibraryLoader::GetModuleHandleW, Win32::System::RemoteDesktop::*,
     Win32::UI::HiDpi::SetProcessDpiAwareness, Win32::UI::Input::KeyboardAndMouse::*,
-    Win32::UI::WindowsAndMessaging::*,
+    Win32::UI::WindowsAndMessaging::*, core::*,
 };
 
 mod animations;
@@ -30,8 +31,9 @@ use ui::*;
 fn main() -> Result<()> {
     unsafe {
         let _ = timeBeginPeriod(1);
-        if let Err(e) = CoInitializeEx(None, COINIT_APARTMENTTHREADED) {
-            eprintln!("CoInitializeEx failed: {:?}", e);
+        let hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        if hr.is_err() {
+            eprintln!("CoInitializeEx failed: {:?}", hr);
         }
         let _ = SetProcessDpiAwareness(windows::Win32::UI::HiDpi::PROCESS_PER_MONITOR_DPI_AWARE);
 
@@ -66,7 +68,7 @@ fn main() -> Result<()> {
         let dialog_class_name = w!("SwiftDialog");
 
         let h_icon = LoadImageW(
-            instance,
+            Some(instance.into()),
             w!("icon.ico"),
             IMAGE_ICON,
             0,
@@ -74,7 +76,7 @@ fn main() -> Result<()> {
             LR_DEFAULTSIZE | LR_SHARED,
         )
         .map(|h| HICON(h.0 as _))
-        .unwrap_or(LoadIconW(None, IDI_APPLICATION).unwrap_or(HICON(0)));
+        .unwrap_or(LoadIconW(None, IDI_APPLICATION).unwrap_or(HICON(std::ptr::null_mut())));
 
         let wc = WNDCLASSW {
             style: CS_DBLCLKS,
@@ -170,7 +172,7 @@ fn main() -> Result<()> {
         FINAL_Y = y;
         START_Y = work_area.bottom;
 
-        let hwnd = CreateWindowExW(
+        let hwnd_result = CreateWindowExW(
             WINDOW_EX_STYLE::default(),
             class_name,
             w!("SwiftRun"),
@@ -181,14 +183,16 @@ fn main() -> Result<()> {
             WIN_H as i32,
             None,
             None,
-            instance,
+            Some(instance.into()),
             None,
         );
-        if hwnd.0 == 0 {
-            let err = GetLastError();
-            eprintln!("CreateWindowExW(main) failed: {:?}", err);
-            return Err(err.into());
-        }
+        let hwnd = match hwnd_result {
+            Ok(h) => h,
+            Err(e) => {
+                eprintln!("CreateWindowExW(main) failed: {:?}", e);
+                return Err(e.into());
+            }
+        };
         H_MAIN = hwnd;
 
         register_hotkeys(hwnd);
@@ -203,11 +207,12 @@ fn main() -> Result<()> {
             0,
             0,
             0,
-            hwnd,
+            Some(hwnd),
             None,
-            instance,
+            Some(instance.into()),
             None,
-        );
+        )
+        .unwrap();
 
         let v: i32 = 1;
         DwmSetWindowAttribute(hwnd, DWMWINDOWATTRIBUTE(20), &v as *const _ as _, 4).ok();
@@ -231,11 +236,12 @@ fn main() -> Result<()> {
             0,
             0,
             0,
-            hwnd,
-            HMENU(EDIT_ID as _),
-            instance,
+            Some(hwnd),
+            Some(HMENU(EDIT_ID as _)),
+            Some(instance.into()),
             None,
-        );
+        )
+        .unwrap();
         let hfont = CreateFontW(
             FONT_SZ_INPUT,
             0,
@@ -245,14 +251,19 @@ fn main() -> Result<()> {
             0,
             0,
             0,
-            0,
-            0,
-            0,
-            0,
+            ANSI_CHARSET,
+            OUT_DEFAULT_PRECIS,
+            CLIP_DEFAULT_PRECIS,
+            DEFAULT_QUALITY,
             0,
             FONT_STD,
         );
-        SendMessageW(H_EDIT, WM_SETFONT, WPARAM(hfont.0 as usize), LPARAM(1));
+        SendMessageW(
+            H_EDIT,
+            WM_SETFONT,
+            Some(WPARAM(hfont.0 as usize)),
+            Some(LPARAM(1)),
+        );
 
         if let Some(history) = &HISTORY {
             if let Some(latest) = history.first() {
@@ -265,24 +276,24 @@ fn main() -> Result<()> {
                 SendMessageW(
                     H_EDIT,
                     windows::Win32::UI::Controls::EM_SETSEL,
-                    WPARAM(0),
-                    LPARAM(-1),
+                    Some(WPARAM(0)),
+                    Some(LPARAM(-1)),
                 );
             }
         }
 
         let blink_time = GetCaretBlinkTime();
         SetTimer(
-            hwnd,
+            Some(hwnd),
             1,
             if blink_time == 0 { 500 } else { blink_time },
             None,
         );
         ANIM_TYPE = AnimType::Entering;
         ANIM_START_TIME = Some(Instant::now());
-        SetTimer(hwnd, 3, ANIM_TIMER_MS, None);
+        SetTimer(Some(hwnd), 3, ANIM_TIMER_MS, None);
         // Heartbeat timer to ensure hotkeys stay registered (Timer ID 4, every 30s)
-        SetTimer(hwnd, 4, 30000, None);
+        SetTimer(Some(hwnd), 4, 30000, None);
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).into() {
@@ -299,12 +310,12 @@ fn main() -> Result<()> {
                 if msg.message == WM_KEYDOWN {
                     if vk == VK_UP.0 as i32 {
                         cycle_history(-1, H_EDIT);
-                        let _ = InvalidateRect(hwnd, None, BOOL(0));
+                        let _ = InvalidateRect(Some(hwnd), None, false);
                         continue;
                     }
                     if vk == VK_DOWN.0 as i32 {
                         cycle_history(1, H_EDIT);
-                        let _ = InvalidateRect(hwnd, None, BOOL(0));
+                        let _ = InvalidateRect(Some(hwnd), None, false);
                         continue;
                     }
                     if GetKeyState(VK_CONTROL.0 as i32) < 0
@@ -324,15 +335,15 @@ fn main() -> Result<()> {
                             "History Cleared",
                             "The command history has been successfully removed.",
                         );
-                        let _ = InvalidateRect(hwnd, None, BOOL(0));
+                        let _ = InvalidateRect(Some(hwnd), None, false);
                         continue;
                     }
                     if vk == VK_RETURN.0 as i32 {
-                        PostMessageW(hwnd, WM_APP_RUN_COMMAND, WPARAM(0), LPARAM(0));
+                        PostMessageW(Some(hwnd), WM_APP_RUN_COMMAND, WPARAM(0), LPARAM(0));
                         continue;
                     }
                 }
-                let _ = InvalidateRect(hwnd, None, BOOL(0));
+                let _ = InvalidateRect(Some(hwnd), None, false);
             }
             if msg.message == WM_KEYDOWN && msg.wParam.0 == 0x1B {
                 start_exit_animation(hwnd, false);

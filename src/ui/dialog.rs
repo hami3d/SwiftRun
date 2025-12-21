@@ -1,10 +1,12 @@
-use windows::core::*;
 use windows::Win32::Foundation::*;
+use windows::core::*;
+
 use windows::Win32::Graphics::Direct2D::Common::*;
 use windows::Win32::Graphics::Direct2D::*;
 use windows::Win32::Graphics::DirectWrite::*;
 use windows::Win32::Graphics::Dwm::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
+
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::MARGINS;
@@ -341,7 +343,7 @@ pub extern "system" fn dialog_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
 
                 if inside != DIALOG_HOVER_OK {
                     DIALOG_HOVER_OK = inside;
-                    let _ = InvalidateRect(hwnd, None, BOOL(0));
+                    let _ = InvalidateRect(Some(hwnd), None, false);
                 }
                 LRESULT(0)
             }
@@ -349,7 +351,7 @@ pub extern "system" fn dialog_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 MOUSE_TRACKED = false;
                 if DIALOG_HOVER_OK {
                     DIALOG_HOVER_OK = false;
-                    let _ = InvalidateRect(hwnd, None, BOOL(0));
+                    let _ = InvalidateRect(Some(hwnd), None, false);
                 }
                 LRESULT(0)
             }
@@ -404,13 +406,14 @@ pub unsafe fn show_fluent_dialog(title: &str, message: &str) {
         h,
         None,
         None,
-        instance,
+        Some(instance.into()),
         None,
-    );
+    )
+    .unwrap_or(HWND(std::ptr::null_mut()));
 
-    if _hwnd.0 != 0 {
+    if !_hwnd.0.is_null() {
         let _ = SetForegroundWindow(_hwnd);
-        let _ = SetFocus(_hwnd);
+        let _ = SetFocus(Some(_hwnd));
     }
 
     let mut msg = MSG::default();

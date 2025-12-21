@@ -18,10 +18,10 @@ pub static mut FONTS: Option<Fonts> = None;
 pub static mut HOVER: HoverId = HoverId::None;
 pub static mut APP_ICON_BITMAP: Option<ID2D1Bitmap> = None;
 
-pub static mut H_MAIN: HWND = HWND(0);
-pub static mut H_EDIT: HWND = HWND(0);
-pub static mut H_DROPDOWN: HWND = HWND(0);
-pub static mut H_TOOLTIP: HWND = HWND(0);
+pub static mut H_MAIN: HWND = HWND(std::ptr::null_mut());
+pub static mut H_EDIT: HWND = HWND(std::ptr::null_mut());
+pub static mut H_DROPDOWN: HWND = HWND(std::ptr::null_mut());
+pub static mut H_TOOLTIP: HWND = HWND(std::ptr::null_mut());
 
 pub static INPUT_BUFFER: Mutex<String> = Mutex::new(String::new());
 

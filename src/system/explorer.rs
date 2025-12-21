@@ -1,9 +1,9 @@
-use windows::core::*;
 use windows::Win32::Foundation::*;
 use windows::Win32::System::Diagnostics::ToolHelp::*;
 use windows::Win32::System::Threading::*;
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+use windows::core::*;
 
 pub unsafe fn restart_explorer() {
     let snapshot = match CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) {
@@ -13,7 +13,7 @@ pub unsafe fn restart_explorer() {
     let mut entry = PROCESSENTRY32W::default();
     entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
 
-    if Process32FirstW(snapshot, &mut entry).as_bool() {
+    if Process32FirstW(snapshot, &mut entry).is_ok() {
         loop {
             let len = entry
                 .szExeFile
@@ -28,7 +28,7 @@ pub unsafe fn restart_explorer() {
                     let _ = CloseHandle(handle);
                 }
             }
-            if !Process32NextW(snapshot, &mut entry).as_bool() {
+            if !Process32NextW(snapshot, &mut entry).is_ok() {
                 break;
             }
         }

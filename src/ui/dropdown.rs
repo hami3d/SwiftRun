@@ -1,16 +1,18 @@
 use std::time::Instant;
-use windows::core::*;
-use windows::Foundation::Numerics::Matrix3x2;
 use windows::Win32::Foundation::*;
+use windows::core::*;
+use windows_numerics::Matrix3x2;
+
 use windows::Win32::Graphics::Direct2D::Common::*;
 use windows::Win32::Graphics::Direct2D::*;
 use windows::Win32::Graphics::DirectWrite::*;
 use windows::Win32::Graphics::Dwm::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
+
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::UI::HiDpi::*;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    SetFocus, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
+    SetFocus, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -264,20 +266,20 @@ pub unsafe extern "system" fn dropdown_wndproc(
         }
         WM_SIZE => {
             DROPDOWN_BRUSHES = None;
-            let _ = InvalidateRect(hwnd, None, BOOL(0));
+            let _ = InvalidateRect(Some(hwnd), None, false);
             LRESULT(0)
         }
         WM_ERASEBKGND => LRESULT(1),
         WM_SHOWWINDOW => {
             if wp.0 == 1 {
-                let _ = InvalidateRect(hwnd, None, BOOL(0));
+                let _ = InvalidateRect(Some(hwnd), None, false);
             }
             LRESULT(0)
         }
         WM_SETTINGCHANGE => {
             set_acrylic_effect(hwnd);
             DROPDOWN_BRUSHES = None;
-            let _ = InvalidateRect(hwnd, None, BOOL(0));
+            let _ = InvalidateRect(Some(hwnd), None, false);
             LRESULT(0)
         }
         WM_PAINT => {
@@ -432,7 +434,7 @@ pub unsafe extern "system" fn dropdown_wndproc(
                                 if e.code() == HRESULT(0x8899000Cu32 as i32) {
                                     DROPDOWN_RENDER_TARGET = None;
                                     DROPDOWN_BRUSHES = None;
-                                    let _ = InvalidateRect(hwnd, None, BOOL(0));
+                                    let _ = InvalidateRect(Some(hwnd), None, false);
                                 }
                             }
                         }
@@ -454,16 +456,17 @@ pub unsafe extern "system" fn dropdown_wndproc(
                         SetWindowTextW(H_EDIT, PCWSTR(u16_vec.as_ptr()));
 
                         SHOW_DROPDOWN = false;
-                        let main_hwnd = FindWindowW(w!("SwiftRunClass"), w!("SwiftRun"));
-                        DROPDOWN_ANIM_START = Some(Instant::now());
-                        DROPDOWN_ANIM_TYPE = AnimType::Exiting;
-                        SetTimer(main_hwnd, 3, 16, None);
-                        SetFocus(H_EDIT);
+                        if let Ok(main_hwnd) = FindWindowW(w!("SwiftRunClass"), w!("SwiftRun")) {
+                            DROPDOWN_ANIM_START = Some(Instant::now());
+                            DROPDOWN_ANIM_TYPE = AnimType::Exiting;
+                            SetTimer(Some(main_hwnd), 3, 16, None);
+                        }
+                        SetFocus(Some(H_EDIT));
                         SendMessageW(
                             H_EDIT,
                             windows::Win32::UI::Controls::EM_SETSEL,
-                            WPARAM(0),
-                            LPARAM(-1),
+                            Some(WPARAM(0)),
+                            Some(LPARAM(-1)),
                         );
                     }
                 }
@@ -476,11 +479,11 @@ pub unsafe extern "system" fn dropdown_wndproc(
             if idx < DROPDOWN_MAX_ITEMS {
                 if HOVER_DROPDOWN != Some(idx) {
                     HOVER_DROPDOWN = Some(idx);
-                    let _ = InvalidateRect(hwnd, None, BOOL(0));
+                    let _ = InvalidateRect(Some(hwnd), None, false);
                 }
             } else if HOVER_DROPDOWN.is_some() {
                 HOVER_DROPDOWN = None;
-                let _ = InvalidateRect(hwnd, None, BOOL(0));
+                let _ = InvalidateRect(Some(hwnd), None, false);
             }
 
             let mut tme = TRACKMOUSEEVENT {
@@ -494,7 +497,7 @@ pub unsafe extern "system" fn dropdown_wndproc(
         }
         WM_MOUSELEAVE => {
             HOVER_DROPDOWN = None;
-            let _ = InvalidateRect(hwnd, None, BOOL(0));
+            let _ = InvalidateRect(Some(hwnd), None, false);
             LRESULT(0)
         }
         WM_MOUSEWHEEL => {
@@ -510,7 +513,7 @@ pub unsafe extern "system" fn dropdown_wndproc(
                             SCROLL_OFFSET += 1;
                         }
                     }
-                    let _ = InvalidateRect(hwnd, None, BOOL(0));
+                    let _ = InvalidateRect(Some(hwnd), None, false);
                 }
             }
             LRESULT(0)

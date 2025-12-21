@@ -1,10 +1,10 @@
 use std::thread;
-use windows::core::*;
 use windows::Win32::Foundation::*;
 use windows::Win32::System::Com::*;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::Shell::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
+use windows::core::*;
 
 use crate::data::history::*;
 use crate::ui::resources::*;
@@ -22,12 +22,18 @@ pub unsafe fn run_command() {
         return;
     }
 
-    let main_hwnd = FindWindowW(w!("SwiftRunClass"), w!("SwiftRun"));
+    let main_hwnd = match FindWindowW(w!("SwiftRunClass"), w!("SwiftRun")) {
+        Ok(h) => h,
+        Err(_) => return,
+    };
 
     let is_url =
         input_str.starts_with("http") || input_str.starts_with("www") || input_str.contains("://");
 
+    let main_hwnd_val = main_hwnd.0 as usize;
+
     thread::spawn(move || {
+        let main_hwnd = HWND(main_hwnd_val as *mut std::ffi::c_void);
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
 
         let mut file_path = input_str.clone();
@@ -67,9 +73,9 @@ pub unsafe fn run_command() {
         CoUninitialize();
 
         if (res.0 as isize) > 32 {
-            PostMessageW(main_hwnd, WM_APP_CLOSE, WPARAM(0), LPARAM(0));
+            PostMessageW(Some(main_hwnd), WM_APP_CLOSE, WPARAM(0), LPARAM(0));
         } else {
-            PostMessageW(main_hwnd, WM_APP_ERROR, WPARAM(0), LPARAM(0));
+            PostMessageW(Some(main_hwnd), WM_APP_ERROR, WPARAM(0), LPARAM(0));
         }
     });
 }

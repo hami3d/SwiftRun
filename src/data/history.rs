@@ -1,10 +1,10 @@
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
-use windows::core::*;
 use windows::Win32::Foundation::*;
 use windows::Win32::UI::Controls::EM_SETSEL;
 use windows::Win32::UI::WindowsAndMessaging::*;
+use windows::core::*;
 
 pub static mut HISTORY: Option<Vec<String>> = None;
 pub static mut HISTORY_INDEX: isize = -1;
@@ -114,6 +114,6 @@ pub unsafe fn cycle_history(delta: isize, h_edit: HWND) {
     SetWindowTextW(h_edit, PCWSTR(text_u16.as_ptr()));
 
     // Also select all
-    SendMessageW(h_edit, EM_SETSEL, WPARAM(0), LPARAM(-1));
+    SendMessageW(h_edit, EM_SETSEL, Some(WPARAM(0)), Some(LPARAM(-1)));
     IS_CYCLING = false;
 }

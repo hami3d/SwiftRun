@@ -1,12 +1,15 @@
 use std::time::Instant;
-use windows::core::*;
-use windows::Foundation::Numerics::Matrix3x2;
 use windows::Win32::Foundation::*;
+use windows::core::*;
+use windows_numerics::Matrix3x2;
+
 use windows::Win32::Graphics::Direct2D::Common::*;
 use windows::Win32::Graphics::Direct2D::*;
 use windows::Win32::Graphics::DirectWrite::*;
 use windows::Win32::Graphics::Dwm::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
+use windows_numerics::Vector2 as D2D_POINT_2F;
+
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::MARGINS;
@@ -23,10 +26,10 @@ pub static mut TOOLTIP_TITLE: String = String::new();
 pub static mut TOOLTIP_MESSAGE: String = String::new();
 
 pub unsafe fn show_tooltip(title: &str, msg: &str) {
-    if H_TOOLTIP.0 != 0 {
+    if !H_TOOLTIP.0.is_null() {
         let _ = DestroyWindow(H_TOOLTIP);
     }
-    H_TOOLTIP = HWND(0);
+    H_TOOLTIP = HWND(std::ptr::null_mut());
     TOOLTIP_RENDER_TARGET = None;
 
     TOOLTIP_TITLE = title.to_string();
@@ -54,11 +57,12 @@ pub unsafe fn show_tooltip(title: &str, msg: &str) {
         y,
         width,
         height,
-        main_hwnd,
+        Some(main_hwnd),
         None,
-        instance,
+        Some(instance.into()),
         None,
-    );
+    )
+    .unwrap_or(HWND(std::ptr::null_mut()));
 
     let v: i32 = 1; // DWMWCP_DONOTROUND
     let _ = DwmSetWindowAttribute(H_TOOLTIP, DWMWINDOWATTRIBUTE(33), &v as *const _ as _, 4);
@@ -76,20 +80,20 @@ pub unsafe fn show_tooltip(title: &str, msg: &str) {
 
     TOOLTIP_ANIM_START = Some(Instant::now());
     TOOLTIP_ANIM_TYPE = AnimType::Entering;
-    SetTimer(H_MAIN, 3, ANIM_TIMER_MS, None);
+    SetTimer(Some(H_MAIN), 3, ANIM_TIMER_MS, None);
 
-    SetTimer(H_TOOLTIP, 2, 8000, None);
+    SetTimer(Some(H_TOOLTIP), 2, 8000, None);
 
-    if H_EDIT.0 != 0 {
-        SetFocus(H_EDIT);
+    if !H_EDIT.0.is_null() {
+        SetFocus(Some(H_EDIT));
         SendMessageW(
             H_EDIT,
             windows::Win32::UI::Controls::EM_SETSEL,
-            WPARAM(0),
-            LPARAM(-1),
+            Some(WPARAM(0)),
+            Some(LPARAM(-1)),
         );
     }
-    let _ = InvalidateRect(H_TOOLTIP, None, BOOL(0));
+    let _ = InvalidateRect(Some(H_TOOLTIP), None, false);
 }
 
 pub unsafe extern "system" fn tooltip_wndproc(
@@ -103,14 +107,14 @@ pub unsafe extern "system" fn tooltip_wndproc(
             if wp.0 == 2 {
                 TOOLTIP_ANIM_START = Some(Instant::now());
                 TOOLTIP_ANIM_TYPE = AnimType::Exiting;
-                SetTimer(H_MAIN, 3, ANIM_TIMER_MS, None);
+                SetTimer(Some(H_MAIN), 3, ANIM_TIMER_MS, None);
             }
             LRESULT(0)
         }
         WM_LBUTTONDOWN => {
             TOOLTIP_ANIM_START = Some(Instant::now());
             TOOLTIP_ANIM_TYPE = AnimType::Exiting;
-            SetTimer(H_MAIN, 3, ANIM_TIMER_MS, None);
+            SetTimer(Some(H_MAIN), 3, ANIM_TIMER_MS, None);
             LRESULT(0)
         }
         WM_DESTROY => {
@@ -122,7 +126,7 @@ pub unsafe extern "system" fn tooltip_wndproc(
             let _ = BeginPaint(hwnd, &mut ps);
             let factory = D2D_FACTORY.as_ref().unwrap();
 
-            if H_TOOLTIP.0 != 0 {
+            if !H_TOOLTIP.0.is_null() {
                 let mut rect = RECT::default();
                 let _ = GetClientRect(hwnd, &mut rect);
                 let w = (rect.right - rect.left) as u32;
@@ -281,16 +285,16 @@ pub unsafe extern "system" fn tooltip_wndproc(
                                 if let Ok(sink) = path.Open() {
                                     sink.BeginFigure(
                                         D2D_POINT_2F {
-                                            x: 20.0,
-                                            y: h_dip - tri_h,
+                                            X: 20.0,
+                                            Y: h_dip - tri_h,
                                         },
                                         D2D1_FIGURE_BEGIN_FILLED,
                                     );
                                     sink.AddLine(D2D_POINT_2F {
-                                        x: 20.0 + TOOLTIP_TRI_W,
-                                        y: h_dip - tri_h,
+                                        X: 20.0 + TOOLTIP_TRI_W,
+                                        Y: h_dip - tri_h,
                                     });
-                                    sink.AddLine(D2D_POINT_2F { x: 20.0, y: h_dip });
+                                    sink.AddLine(D2D_POINT_2F { X: 20.0, Y: h_dip });
                                     sink.EndFigure(D2D1_FIGURE_END_CLOSED);
                                     let _ = sink.Close();
                                     rt.FillGeometry(&path, &bg_brush, None);
@@ -312,8 +316,8 @@ pub unsafe extern "system" fn tooltip_wndproc(
 
                         // Icon: Red Circle with '!'
                         let icon_center = D2D_POINT_2F {
-                            x: TOOLTIP_PADDING + TOOLTIP_ICON_SIZE / 2.0,
-                            y: TOOLTIP_PADDING + TOOLTIP_ICON_SIZE / 2.0,
+                            X: TOOLTIP_PADDING + TOOLTIP_ICON_SIZE / 2.0,
+                            Y: TOOLTIP_PADDING + TOOLTIP_ICON_SIZE / 2.0,
                         };
                         if let Ok(red_brush) = rt.CreateSolidColorBrush(
                             &D2D1_COLOR_F {

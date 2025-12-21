@@ -1,5 +1,5 @@
-use windows::core::*;
 use windows::Win32::System::Registry::*;
+use windows::core::*;
 
 pub fn manage_registry_hooks(install: bool) -> Result<()> {
     unsafe {
@@ -10,7 +10,7 @@ pub fn manage_registry_hooks(install: bool) -> Result<()> {
         if RegOpenKeyExW(
             HKEY_CURRENT_USER,
             run_key_path,
-            0,
+            Some(0),
             KEY_SET_VALUE | KEY_QUERY_VALUE,
             &mut h_key,
         )
@@ -25,7 +25,7 @@ pub fn manage_registry_hooks(install: bool) -> Result<()> {
                         path_u16.as_ptr() as *const u8,
                         path_u16.len() * 2,
                     );
-                    RegSetValueExW(h_key, w!("SwiftRun"), 0, REG_SZ, Some(data)).ok()?;
+                    RegSetValueExW(h_key, w!("SwiftRun"), Some(0), REG_SZ, Some(data)).ok()?;
                 }
             } else {
                 let _ = RegDeleteValueW(h_key, w!("SwiftRun"));
@@ -39,7 +39,7 @@ pub fn manage_registry_hooks(install: bool) -> Result<()> {
         if RegOpenKeyExW(
             HKEY_CURRENT_USER,
             explorer_key_path,
-            0,
+            Some(0),
             KEY_SET_VALUE | KEY_QUERY_VALUE,
             &mut h_key,
         )
@@ -76,7 +76,7 @@ pub fn manage_registry_hooks(install: bool) -> Result<()> {
                         val_u16.as_ptr() as *const u8,
                         val_u16.len() * 2,
                     );
-                    RegSetValueExW(h_key, val_name, 0, REG_SZ, Some(data_slice)).ok()?;
+                    RegSetValueExW(h_key, val_name, Some(0), REG_SZ, Some(data_slice)).ok()?;
                 }
             } else {
                 // Remove 'R' from DisabledHotkeys
@@ -105,7 +105,8 @@ pub fn manage_registry_hooks(install: bool) -> Result<()> {
                                 val_u16.as_ptr() as *const u8,
                                 val_u16.len() * 2,
                             );
-                            let _ = RegSetValueExW(h_key, val_name, 0, REG_SZ, Some(data_slice));
+                            let _ =
+                                RegSetValueExW(h_key, val_name, Some(0), REG_SZ, Some(data_slice));
                         }
                     }
                 }
