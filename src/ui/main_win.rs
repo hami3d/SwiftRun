@@ -19,6 +19,7 @@ use crate::animations::*;
 use crate::config::*;
 use crate::data::history::*;
 use crate::system::executor::run_command;
+use crate::system::hotkeys::*;
 use crate::ui::resources::*;
 use crate::ui::tooltip::show_tooltip;
 use crate::ui::*;
@@ -308,12 +309,21 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 if !still_animating {
                     KillTimer(hwnd, 3);
                 }
+            } else if wp.0 == 4 {
+                // Heartbeat: re-register hotkeys just in case
+                register_hotkeys(hwnd);
             }
             LRESULT(0)
         }
         WM_SETTINGCHANGE => {
             set_acrylic_effect(hwnd);
             BRUSHES = None;
+            let _ = InvalidateRect(hwnd, None, BOOL(0));
+            LRESULT(0)
+        }
+        WM_DISPLAYCHANGE => {
+            // Screen resolution or monitor change might affect window environment
+            register_hotkeys(hwnd);
             let _ = InvalidateRect(hwnd, None, BOOL(0));
             LRESULT(0)
         }
@@ -514,6 +524,22 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                         }
                     }
                 }
+            }
+            LRESULT(0)
+        }
+        WM_WTSSESSION_CHANGE => {
+            // Re-register hotkeys on session unlock to ensure they still work
+            if wp.0 == 0x7 || wp.0 == 0x8 {
+                // WTS_SESSION_UNLOCK || WTS_SESSION_LOGON
+                register_hotkeys(hwnd);
+            }
+            LRESULT(0)
+        }
+        WM_POWERBROADCAST => {
+            // Re-register on resume from sleep
+            if wp.0 == 0x7 || wp.0 == 0x12 {
+                // PBT_APMRESUMESUSPEND || PBT_APMRESUMEAUTOMATIC
+                register_hotkeys(hwnd);
             }
             LRESULT(0)
         }

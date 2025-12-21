@@ -49,10 +49,10 @@ pub const TOOLTIP_CORNER_RADIUS: f32 = 8.0;
 //  DIALOG WINDOW CONFIGURATION
 // ----------------------------------------------------------------------------------
 pub const DIALOG_W: i32 = 620;
-pub const DIALOG_H: i32 = 210;
+pub const DIALOG_H: i32 = 190;
 pub const DIALOG_PADDING: f32 = 22.0;
 pub const DIALOG_BTN_W: f32 = 160.0;
-pub const DIALOG_BTN_H: f32 = 38.0;
+pub const DIALOG_BTN_H: f32 = 36.0;
 
 // ----------------------------------------------------------------------------------
 //  TYPOGRAPHY & FONTS
@@ -69,8 +69,7 @@ pub const FONT_SZ_LABEL: f32 = 12.0;
 pub const FONT_SZ_BUTTON: f32 = 12.0;
 pub const FONT_SZ_TOOLTIP: f32 = 11.5;
 pub const FONT_SZ_TOOLTIP_BOLD: f32 = 12.5;
-pub const FONT_SZ_DIALOG_TITLE: f32 = 20.0;
-pub const FONT_SZ_DIALOG_MSG: f32 = 15.0;
+pub const FONT_SZ_DIALOG_MSG: f32 = 18.0;
 pub const FONT_SZ_DIALOG_BTN: f32 = 15.0;
 pub const FONT_SZ_INPUT: i32 = 20;
 

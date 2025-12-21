@@ -1,6 +1,6 @@
 [package]
 name = "swift_run"
-version = "0.1.0"
+version = "0.8.0-beta"
 edition = "2021"
 
 [dependencies.windows]
@@ -28,7 +28,28 @@ features = [
     "Win32_System_Threading",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_Media",
+    "Win32_System_RemoteDesktop",
+    "Win32_System_Power",
 ]
+
+[[bin]]
+name = "swift_run"
+path = "src/main.rs"
+
+[[bin]]
+name = "swift_run_Install"
+path = "src/installer.rs"
+
+[[bin]]
+name = "swift_run_Uninstall"
+path = "src/uninstaller.rs"
 
 [build-dependencies]
 embed-resource = "3.0.6"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

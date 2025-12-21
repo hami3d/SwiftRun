@@ -1,2 +1,0 @@
-   Compiling swift_run v0.1.0 (C:\Users\HamidR\Documents\swift_run)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.64s

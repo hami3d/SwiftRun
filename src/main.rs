@@ -1,13 +1,15 @@
 ﻿#![allow(static_mut_refs)]
 #![allow(non_snake_case)]
+#![windows_subsystem = "windows"]
 
 use std::fs;
 use std::time::Instant;
 use windows::{
     core::*, Win32::Foundation::*, Win32::Graphics::Direct2D::*, Win32::Graphics::DirectWrite::*,
     Win32::Graphics::Dwm::*, Win32::Graphics::Gdi::*, Win32::Media::*, Win32::System::Com::*,
-    Win32::System::LibraryLoader::GetModuleHandleW, Win32::UI::HiDpi::SetProcessDpiAwareness,
-    Win32::UI::Input::KeyboardAndMouse::*, Win32::UI::WindowsAndMessaging::*,
+    Win32::System::LibraryLoader::GetModuleHandleW, Win32::System::RemoteDesktop::*,
+    Win32::UI::HiDpi::SetProcessDpiAwareness, Win32::UI::Input::KeyboardAndMouse::*,
+    Win32::UI::WindowsAndMessaging::*,
 };
 
 mod animations;
@@ -190,6 +192,7 @@ fn main() -> Result<()> {
         H_MAIN = hwnd;
 
         register_hotkeys(hwnd);
+        let _ = WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION);
 
         H_DROPDOWN = CreateWindowExW(
             WS_EX_TOOLWINDOW,
@@ -278,6 +281,8 @@ fn main() -> Result<()> {
         ANIM_TYPE = AnimType::Entering;
         ANIM_START_TIME = Some(Instant::now());
         SetTimer(hwnd, 3, ANIM_TIMER_MS, None);
+        // Heartbeat timer to ensure hotkeys stay registered (Timer ID 4, every 30s)
+        SetTimer(hwnd, 4, 30000, None);
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).into() {

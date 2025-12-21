@@ -19,6 +19,7 @@ pub static mut DIALOG_TITLE: String = String::new();
 pub static mut DIALOG_MESSAGE: String = String::new();
 pub static mut DIALOG_HOVER_OK: bool = false;
 pub static mut DIALOG_ACTIVE: bool = false;
+static mut MOUSE_TRACKED: bool = false;
 
 pub extern "system" fn dialog_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
@@ -54,7 +55,7 @@ pub extern "system" fn dialog_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 BeginPaint(hwnd, &mut ps);
 
                 let padding = DIALOG_PADDING;
-                let title_height = 15.0; // Keep this as layout logic or move to config if critical
+                // let title_height = 15.0; // Removed title
                 let button_w = DIALOG_BTN_W;
                 let button_h = DIALOG_BTN_H;
 
@@ -103,6 +104,7 @@ pub extern "system" fn dialog_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                     };
                     let brush = rt.CreateSolidColorBrush(&text_color, None).unwrap();
 
+                    /*
                     let title_format = DWRITE_FACTORY
                         .as_ref()
                         .unwrap()
@@ -116,6 +118,7 @@ pub extern "system" fn dialog_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                             w!("en-us"),
                         )
                         .unwrap();
+                    */
 
                     let ok_text_format = DWRITE_FACTORY
                         .as_ref()
@@ -133,6 +136,7 @@ pub extern "system" fn dialog_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                     let _ = ok_text_format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
                     let _ = ok_text_format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
 
+                    /*
                     let title_u16: Vec<u16> = DIALOG_TITLE.encode_utf16().collect();
                     rt.DrawText(
                         &title_u16,
@@ -147,6 +151,7 @@ pub extern "system" fn dialog_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                         D2D1_DRAW_TEXT_OPTIONS_NONE,
                         DWRITE_MEASURING_MODE_NATURAL,
                     );
+                    */
 
                     let msg_format = DWRITE_FACTORY
                         .as_ref()
@@ -168,7 +173,7 @@ pub extern "system" fn dialog_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                         &msg_format,
                         &D2D_RECT_F {
                             left: padding,
-                            top: padding + title_height + 10.0,
+                            top: padding + 5.0,
                             right: w - padding,
                             bottom: h - padding - button_h - 10.0,
                         },
@@ -322,8 +327,28 @@ pub extern "system" fn dialog_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                     && sx <= btn_rect.right
                     && sy >= btn_rect.top
                     && sy <= btn_rect.bottom;
+
+                if !MOUSE_TRACKED {
+                    let mut tme = TRACKMOUSEEVENT {
+                        cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+                        dwFlags: TME_LEAVE,
+                        hwndTrack: hwnd,
+                        dwHoverTime: 0,
+                    };
+                    let _ = TrackMouseEvent(&mut tme);
+                    MOUSE_TRACKED = true;
+                }
+
                 if inside != DIALOG_HOVER_OK {
                     DIALOG_HOVER_OK = inside;
+                    let _ = InvalidateRect(hwnd, None, BOOL(0));
+                }
+                LRESULT(0)
+            }
+            WM_MOUSELEAVE => {
+                MOUSE_TRACKED = false;
+                if DIALOG_HOVER_OK {
+                    DIALOG_HOVER_OK = false;
                     let _ = InvalidateRect(hwnd, None, BOOL(0));
                 }
                 LRESULT(0)
