@@ -152,14 +152,14 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 };
                 let _ = target.Resize(&size);
             }
-            let w = (lp.0 & 0xFFFF) as i32;
-            SetWindowPos(
+            let _w = (lp.0 & 0xFFFF) as i32;
+            let _ = SetWindowPos(
                 H_EDIT,
                 None,
                 -10000,
                 -10000,
-                w,
-                50,
+                0,
+                0,
                 SWP_NOZORDER | SWP_NOACTIVATE,
             );
             let _ = InvalidateRect(Some(hwnd), None, false);
@@ -173,7 +173,7 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                     let _ = InvalidateRect(Some(hwnd), None, false);
                 }
             } else {
-                SetFocus(Some(H_EDIT));
+                let _ = SetFocus(Some(H_EDIT));
                 SendMessageW(H_EDIT, EM_SETSEL, Some(WPARAM(0)), Some(LPARAM(-1)));
             }
             LRESULT(0)
@@ -250,7 +250,7 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                                 still_animating = true;
                             } else {
                                 ANIM_TYPE = AnimType::None;
-                                SetWindowPos(
+                                let _ = SetWindowPos(
                                     hwnd,
                                     None,
                                     FINAL_X,
@@ -408,14 +408,14 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                             | (((20.0 * scale) as i32 as isize & 0xFFFF) << 16),
                     );
                     SendMessageW(H_EDIT, WM_LBUTTONDOWN, Some(wp), Some(n_lp));
-                    SetFocus(Some(H_EDIT));
+                    let _ = SetFocus(Some(H_EDIT));
                     let _ = InvalidateRect(Some(hwnd), None, false);
                 }
                 HoverId::None => {
-                    SetFocus(Some(H_EDIT));
+                    let _ = SetFocus(Some(H_EDIT));
                     if SHOW_DROPDOWN {
                         SHOW_DROPDOWN = false;
-                        ShowWindow(H_DROPDOWN, SW_HIDE);
+                        let _ = ShowWindow(H_DROPDOWN, SW_HIDE);
                         let _ = InvalidateRect(Some(hwnd), None, false);
                     }
                 }
@@ -448,7 +448,7 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                                     as i32;
                             }
                             if drop_h > 0 {
-                                SetWindowPos(
+                                let _ = SetWindowPos(
                                     H_DROPDOWN,
                                     Some(HWND_TOPMOST),
                                     x,
@@ -501,11 +501,11 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             BeginPaint(hwnd, &mut ps);
             ensure_resources(hwnd);
             paint();
-            EndPaint(hwnd, &ps);
+            let _ = EndPaint(hwnd, &ps);
             LRESULT(0)
         }
         WM_SETFOCUS => {
-            SetFocus(Some(H_EDIT));
+            let _ = SetFocus(Some(H_EDIT));
             LRESULT(0)
         }
         WM_HOTKEY => {
@@ -514,8 +514,8 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                     start_exit_animation(hwnd, false);
                 } else {
                     let _ = ShowWindow(hwnd, SW_SHOW);
-                    SetForegroundWindow(hwnd);
-                    SetFocus(Some(H_EDIT));
+                    let _ = SetForegroundWindow(hwnd);
+                    let _ = SetFocus(Some(H_EDIT));
                     ANIM_TYPE = AnimType::Entering;
                     ANIM_START_TIME = Some(Instant::now());
                     SetTimer(Some(hwnd), 3, 10, None);
@@ -526,7 +526,7 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                             }
                             let latest_u16: Vec<u16> =
                                 latest.encode_utf16().chain(std::iter::once(0)).collect();
-                            SetWindowTextW(H_EDIT, PCWSTR(latest_u16.as_ptr()));
+                            let _ = SetWindowTextW(H_EDIT, PCWSTR(latest_u16.as_ptr()));
                             SendMessageW(H_EDIT, EM_SETSEL, Some(WPARAM(0)), Some(LPARAM(-1)));
                         }
                     }
@@ -569,6 +569,28 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 }
             }
             DefWindowProcW(hwnd, msg, wp, lp)
+        }
+        WM_DPICHANGED => {
+            let dpi_x = (wp.0 & 0xFFFF) as f32;
+            let dpi_y = ((wp.0 >> 16) & 0xFFFF) as f32;
+            let rect = &*(lp.0 as *const RECT);
+
+            if let Some(target) = RENDER_TARGET.as_ref() {
+                target.SetDpi(dpi_x, dpi_y);
+            }
+
+            SetWindowPos(
+                hwnd,
+                None,
+                rect.left,
+                rect.top,
+                rect.right - rect.left,
+                rect.bottom - rect.top,
+                SWP_NOZORDER | SWP_NOACTIVATE,
+            )
+            .unwrap_or(());
+
+            LRESULT(0)
         }
         _ => DefWindowProcW(hwnd, msg, wp, lp),
     }

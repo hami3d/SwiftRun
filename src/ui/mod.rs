@@ -144,7 +144,7 @@ pub unsafe fn set_acrylic_effect(hwnd: HWND) {
             s!("SetWindowCompositionAttribute"),
         ) {
             let func: SetWindowCompositionAttributeFunc = std::mem::transmute(addr);
-            func(hwnd, &mut data);
+            let _ = func(hwnd, &mut data);
         }
     }
 

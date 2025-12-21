@@ -453,7 +453,7 @@ pub unsafe extern "system" fn dropdown_wndproc(
                         }
                         let u16_vec: Vec<u16> =
                             cmd.encode_utf16().chain(std::iter::once(0)).collect();
-                        SetWindowTextW(H_EDIT, PCWSTR(u16_vec.as_ptr()));
+                        let _ = SetWindowTextW(H_EDIT, PCWSTR(u16_vec.as_ptr()));
 
                         SHOW_DROPDOWN = false;
                         if let Ok(main_hwnd) = FindWindowW(w!("SwiftRunClass"), w!("SwiftRun")) {
@@ -461,8 +461,8 @@ pub unsafe extern "system" fn dropdown_wndproc(
                             DROPDOWN_ANIM_TYPE = AnimType::Exiting;
                             SetTimer(Some(main_hwnd), 3, 16, None);
                         }
-                        SetFocus(Some(H_EDIT));
-                        SendMessageW(
+                        let _ = SetFocus(Some(H_EDIT));
+                        let _ = SendMessageW(
                             H_EDIT,
                             windows::Win32::UI::Controls::EM_SETSEL,
                             Some(WPARAM(0)),

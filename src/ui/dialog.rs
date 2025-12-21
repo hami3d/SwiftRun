@@ -263,7 +263,7 @@ pub extern "system" fn dialog_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                     );
                     let _ = rt.EndDraw(None, None);
                 }
-                EndPaint(hwnd, &ps);
+                let _ = EndPaint(hwnd, &ps);
                 LRESULT(0)
             }
             WM_NCHITTEST => {
@@ -419,8 +419,8 @@ pub unsafe fn show_fluent_dialog(title: &str, message: &str) {
     let mut msg = MSG::default();
     while DIALOG_ACTIVE {
         if GetMessageW(&mut msg, None, 0, 0).as_bool() {
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
+            let _ = TranslateMessage(&msg);
+            let _ = DispatchMessageW(&msg);
         } else {
             break;
         }

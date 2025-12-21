@@ -76,7 +76,7 @@ pub unsafe fn show_tooltip(title: &str, msg: &str) {
     };
     let _ = DwmExtendFrameIntoClientArea(H_TOOLTIP, &margins);
 
-    ShowWindow(H_TOOLTIP, SW_SHOWNOACTIVATE);
+    let _ = ShowWindow(H_TOOLTIP, SW_SHOWNOACTIVATE);
 
     TOOLTIP_ANIM_START = Some(Instant::now());
     TOOLTIP_ANIM_TYPE = AnimType::Entering;
@@ -85,7 +85,7 @@ pub unsafe fn show_tooltip(title: &str, msg: &str) {
     SetTimer(Some(H_TOOLTIP), 2, 8000, None);
 
     if !H_EDIT.0.is_null() {
-        SetFocus(Some(H_EDIT));
+        let _ = SetFocus(Some(H_EDIT));
         SendMessageW(
             H_EDIT,
             windows::Win32::UI::Controls::EM_SETSEL,
@@ -415,7 +415,7 @@ pub unsafe extern "system" fn tooltip_wndproc(
                     }
                 }
             }
-            EndPaint(hwnd, &ps);
+            let _ = EndPaint(hwnd, &ps);
             LRESULT(0)
         }
         _ => DefWindowProcW(hwnd, msg, wp, lp),

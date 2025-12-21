@@ -30,7 +30,7 @@ pub fn manage_registry_hooks(install: bool) -> Result<()> {
             } else {
                 let _ = RegDeleteValueW(h_key, w!("SwiftRun"));
             }
-            RegCloseKey(h_key);
+            let _ = RegCloseKey(h_key);
         }
 
         // 2. Manage DisabledHotkeys to hijack Win+R
@@ -111,7 +111,7 @@ pub fn manage_registry_hooks(install: bool) -> Result<()> {
                     }
                 }
             }
-            RegCloseKey(h_key);
+            let _ = RegCloseKey(h_key);
         }
     }
     Ok(())
