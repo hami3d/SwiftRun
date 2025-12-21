@@ -16,6 +16,7 @@ I'm using Windows 11 25H2 and tested it here, so submit an issue if you have any
 
 ## ✨ Features that Make a Difference
 
+- **🤖 No AI Features!** : Everything is light-weight and fast, no need for Online Connectivity.
 - **💎 Fluent Aesthetics**: Unlike Microsoft, the open-source community does a better job! Full support for Windows **Acrylic** transparency effects and rounded corners. It adapts to both **Light and Dark modes** based on your system settings.
 - **🚀 Silky Smooth UI**: Everything is hardware accelerated. From the high-FPS entry animations to the sub-pixel font rendering.
 - **⚡ Built with Rust**: Blazing fast, memory-safe, and incredibly lightweight. It’s there when you need it and invisible when you don’t.
