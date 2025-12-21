@@ -6,7 +6,7 @@
 
 This is a High Performance Rust Based Windows 11 Run Dialog Replacement with Modern UI and Hardware Accelerated Rendering with the Use of Win32 API. Written mostly with the help of Agentic AI and *"Vibe Coding"* in a couple of days.
 ```
-### **proving even Microsoft doesn't know how to use AI right!**
+proving even Microsoft doesn't know how to use AI right!
 ```
 
 **Still in Beta Stage!**
