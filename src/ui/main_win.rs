@@ -81,6 +81,89 @@ pub unsafe fn hit_test(x: i32, y: i32, w: f32, _h: f32, input_empty: bool) -> Ho
     HoverId::None
 }
 
+pub unsafe fn update_suggestions(hwnd: HWND, input: &str) {
+    if input.is_empty() {
+        FILTERED_HISTORY = None;
+        PREDICTION = String::new();
+        if SHOW_DROPDOWN {
+            SHOW_DROPDOWN = false;
+            DROPDOWN_ANIM_START = Some(Instant::now());
+            DROPDOWN_ANIM_TYPE = AnimType::Exiting;
+            SetTimer(Some(hwnd), 3, ANIM_TIMER_MS, None);
+        }
+        return;
+    }
+
+    let input_lower = input.to_lowercase();
+    let mut matches = Vec::new();
+    let mut best_prediction = String::new();
+
+    if let Some(history) = HISTORY.as_ref() {
+        for cmd in history {
+            let cmd_lower = cmd.to_lowercase();
+            if cmd_lower.starts_with(&input_lower) {
+                matches.push(cmd.clone());
+                if best_prediction.is_empty() && cmd_lower != input_lower {
+                    best_prediction = cmd.clone();
+                }
+            } else if cmd_lower.contains(&input_lower) {
+                matches.push(cmd.clone());
+            }
+        }
+    }
+
+    FILTERED_HISTORY = if matches.is_empty() {
+        None
+    } else {
+        Some(matches)
+    };
+    PREDICTION = best_prediction;
+
+    if FILTERED_HISTORY.is_some() {
+        if !SHOW_DROPDOWN {
+            SHOW_DROPDOWN = true;
+            HOVER_DROPDOWN = Some(0);
+            SCROLL_OFFSET = 0;
+            DROPDOWN_ANIM_START = Some(Instant::now());
+            DROPDOWN_ANIM_TYPE = AnimType::Entering;
+            SetTimer(Some(hwnd), 3, ANIM_TIMER_MS, None);
+        }
+        // Update position/size if already shown
+        let mut rect = RECT::default();
+        let _ = GetWindowRect(hwnd, &mut rect);
+        let scale = get_dpi_scale(hwnd);
+        let margin_px = (MARGIN * scale) as i32;
+        let (x, y) = (
+            rect.left + margin_px,
+            rect.top + ((INPUT_Y + INPUT_H) * scale) as i32 + (DROPDOWN_GAP * scale) as i32,
+        );
+        let w = (rect.right - rect.left) - (margin_px * 2);
+        let count = FILTERED_HISTORY
+            .as_ref()
+            .unwrap()
+            .len()
+            .min(DROPDOWN_MAX_ITEMS);
+        let h = (count as f32 * ITEM_H * scale) as i32;
+
+        let _ = SetWindowPos(
+            H_DROPDOWN,
+            Some(HWND_TOPMOST),
+            x,
+            y,
+            w,
+            h,
+            SWP_SHOWWINDOW | SWP_NOACTIVATE,
+        );
+    } else if SHOW_DROPDOWN {
+        SHOW_DROPDOWN = false;
+        DROPDOWN_ANIM_START = Some(Instant::now());
+        DROPDOWN_ANIM_TYPE = AnimType::Exiting;
+        SetTimer(Some(hwnd), 3, ANIM_TIMER_MS, None);
+    }
+
+    let _ = InvalidateRect(Some(hwnd), None, false);
+}
+
 pub unsafe fn start_exit_animation(hwnd: HWND, kill: bool) {
     if ANIM_TYPE == AnimType::Exiting {
         EXIT_KILL_PROCESS = kill;
@@ -495,8 +578,12 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 let len = GetWindowTextLengthW(H_EDIT);
                 let mut buf = vec![0u16; (len + 1) as usize];
                 GetWindowTextW(H_EDIT, &mut buf);
+                let current_input = String::from_utf16_lossy(&buf[..len as usize]);
                 if let Ok(mut lock) = INPUT_BUFFER.lock() {
-                    *lock = String::from_utf16_lossy(&buf[..len as usize]);
+                    *lock = current_input.clone();
+                }
+                if !IS_CYCLING {
+                    update_suggestions(hwnd, &current_input);
                 }
                 let _ = InvalidateRect(Some(hwnd), None, false);
             }
@@ -584,21 +671,6 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             crate::system::hotkeys::unregister_hotkeys(hwnd);
             PostQuitMessage(0);
             LRESULT(0)
-        }
-        WM_KEYDOWN => {
-            let vk = wp.0 as u16;
-            if !SHOW_DROPDOWN {
-                if vk == VK_UP.0 {
-                    cycle_history(-1, H_EDIT);
-                    let _ = InvalidateRect(Some(hwnd), None, false);
-                    return LRESULT(0);
-                } else if vk == VK_DOWN.0 {
-                    cycle_history(1, H_EDIT);
-                    let _ = InvalidateRect(Some(hwnd), None, false);
-                    return LRESULT(0);
-                }
-            }
-            DefWindowProcW(hwnd, msg, wp, lp)
         }
         WM_DPICHANGED => {
             let dpi_x = (wp.0 & 0xFFFF) as f32;
@@ -970,6 +1042,20 @@ pub unsafe fn ensure_fonts() {
     let _ = icon.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
     let _ = icon.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
 
+    let input = dwrite
+        .CreateTextFormat(
+            FONT_TEXT,
+            None,
+            DWRITE_FONT_WEIGHT_SEMI_BOLD,
+            DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL,
+            FONT_SZ_BUTTON,
+            w!(""),
+        )
+        .unwrap();
+    let _ = input.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+    let _ = input.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+
     FONTS = Some(Fonts {
         title,
         label,
@@ -977,6 +1063,7 @@ pub unsafe fn ensure_fonts() {
         tooltip,
         tooltip_bold,
         icon,
+        input,
     });
 }
 
@@ -1164,7 +1251,7 @@ pub unsafe fn paint() {
             if let Some(dwrite) = &DWRITE_FACTORY {
                 if let Ok(layout) = dwrite.CreateTextLayout(
                     &hint_u16,
-                    &f.button,
+                    &f.input,
                     text_rect.right - text_rect.left,
                     text_rect.bottom - text_rect.top,
                 ) {
@@ -1185,7 +1272,7 @@ pub unsafe fn paint() {
                 let text_u16: Vec<u16> = buf.encode_utf16().collect();
                 if let Ok(layout) = dwrite.CreateTextLayout(
                     &text_u16,
-                    &f.button,
+                    &f.input,
                     text_rect.right - text_rect.left,
                     text_rect.bottom - text_rect.top,
                 ) {
@@ -1219,6 +1306,41 @@ pub unsafe fn paint() {
                         &b.white,
                         D2D1_DRAW_TEXT_OPTIONS_NONE,
                     );
+
+                    // Draw Prediction Ghost Text
+                    if !PREDICTION.is_empty()
+                        && PREDICTION.to_lowercase().starts_with(&buf.to_lowercase())
+                    {
+                        let pred_chars: Vec<char> = PREDICTION.chars().collect();
+                        let buf_chars: Vec<char> = buf.chars().collect();
+                        if pred_chars.len() > buf_chars.len() {
+                            let pred_suffix =
+                                pred_chars[buf_chars.len()..].iter().collect::<String>();
+                            let suffix_u16: Vec<u16> = pred_suffix.encode_utf16().collect();
+                            let (mut x, mut y, mut m) = (0.0, 0.0, std::mem::zeroed());
+                            let _ = layout.HitTestTextPosition(
+                                buf.len() as u32,
+                                false,
+                                &mut x,
+                                &mut y,
+                                &mut m,
+                            );
+
+                            rt.DrawText(
+                                &suffix_u16,
+                                &f.input,
+                                &D2D_RECT_F {
+                                    left: text_rect.left + x,
+                                    top: text_rect.top,
+                                    right: text_rect.right,
+                                    bottom: text_rect.bottom,
+                                },
+                                &b.gray,
+                                D2D1_DRAW_TEXT_OPTIONS_CLIP,
+                                DWRITE_MEASURING_MODE_NATURAL,
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -1233,7 +1355,7 @@ pub unsafe fn paint() {
                     let text_u16: Vec<u16> = buf.encode_utf16().collect();
                     if let Ok(layout) = dwrite.CreateTextLayout(
                         &text_u16,
-                        &f.button,
+                        &f.input,
                         text_rect.right - text_rect.left,
                         text_rect.bottom - text_rect.top,
                     ) {

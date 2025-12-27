@@ -359,15 +359,23 @@ pub unsafe extern "system" fn dropdown_wndproc(
                                 &b.input_bg,
                             );
 
-                            if let Some(history) = HISTORY.as_ref() {
-                                for (i, item) in history
+                            let history_to_use = if let Some(filtered) = FILTERED_HISTORY.as_ref() {
+                                filtered
+                            } else if let Some(history) = HISTORY.as_ref() {
+                                history
+                            } else {
+                                &Vec::new()
+                            };
+
+                            if !history_to_use.is_empty() {
+                                for (i, item) in history_to_use
                                     .iter()
                                     .skip(SCROLL_OFFSET)
                                     .take(DROPDOWN_MAX_ITEMS)
                                     .enumerate()
                                 {
                                     let item_y = i as f32 * ITEM_H;
-                                    let total_items = history.len();
+                                    let total_items = history_to_use.len();
                                     let scroll_width = if total_items > DROPDOWN_MAX_ITEMS {
                                         8.0
                                     } else {
@@ -408,7 +416,7 @@ pub unsafe extern "system" fn dropdown_wndproc(
                                     );
                                 }
 
-                                let total_items = history.len();
+                                let total_items = history_to_use.len();
                                 if total_items > DROPDOWN_MAX_ITEMS {
                                     let ratio = DROPDOWN_MAX_ITEMS as f32 / total_items as f32;
                                     let thumb_h = h * ratio;
@@ -450,29 +458,38 @@ pub unsafe extern "system" fn dropdown_wndproc(
         }
         WM_LBUTTONDOWN => {
             if let Some(idx) = HOVER_DROPDOWN {
-                if let Some(history) = HISTORY.as_ref() {
-                    if let Some(cmd) = history.get(SCROLL_OFFSET + idx) {
-                        if let Ok(mut lock) = INPUT_BUFFER.lock() {
-                            *lock = cmd.clone();
-                        }
-                        let u16_vec: Vec<u16> =
-                            cmd.encode_utf16().chain(std::iter::once(0)).collect();
-                        let _ = SetWindowTextW(H_EDIT, PCWSTR(u16_vec.as_ptr()));
+                let history_to_use = if let Some(filtered) = FILTERED_HISTORY.as_ref() {
+                    filtered
+                } else if let Some(history) = HISTORY.as_ref() {
+                    history
+                } else {
+                    &Vec::new()
+                };
 
-                        SHOW_DROPDOWN = false;
-                        if let Ok(main_hwnd) = FindWindowW(w!("SwiftRunClass"), w!("SwiftRun")) {
-                            DROPDOWN_ANIM_START = Some(Instant::now());
-                            DROPDOWN_ANIM_TYPE = AnimType::Exiting;
-                            SetTimer(Some(main_hwnd), 3, 16, None);
-                        }
-                        let _ = SetFocus(Some(H_EDIT));
-                        let _ = SendMessageW(
-                            H_EDIT,
-                            windows::Win32::UI::Controls::EM_SETSEL,
-                            Some(WPARAM(0)),
-                            Some(LPARAM(-1)),
-                        );
+                if let Some(cmd) = history_to_use.get(SCROLL_OFFSET + idx) {
+                    if let Ok(mut lock) = INPUT_BUFFER.lock() {
+                        *lock = cmd.clone();
                     }
+                    let u16_vec: Vec<u16> = cmd.encode_utf16().chain(std::iter::once(0)).collect();
+                    IS_CYCLING = true;
+                    let _ = SetWindowTextW(H_EDIT, PCWSTR(u16_vec.as_ptr()));
+                    IS_CYCLING = false;
+                    FILTERED_HISTORY = None;
+                    PREDICTION = String::new();
+
+                    SHOW_DROPDOWN = false;
+                    if let Ok(main_hwnd) = FindWindowW(w!("SwiftRunClass"), w!("SwiftRun")) {
+                        DROPDOWN_ANIM_START = Some(Instant::now());
+                        DROPDOWN_ANIM_TYPE = AnimType::Exiting;
+                        SetTimer(Some(main_hwnd), 3, 16, None);
+                    }
+                    let _ = SetFocus(Some(H_EDIT));
+                    let _ = SendMessageW(
+                        H_EDIT,
+                        windows::Win32::UI::Controls::EM_SETSEL,
+                        Some(WPARAM(0)),
+                        Some(LPARAM(-1)),
+                    );
                 }
             }
             LRESULT(0)

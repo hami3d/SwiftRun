@@ -9,8 +9,8 @@ use windows::{
     Win32::Foundation::*, Win32::Graphics::Direct2D::*, Win32::Graphics::DirectWrite::*,
     Win32::Graphics::Dwm::*, Win32::Graphics::Gdi::*, Win32::Media::*, Win32::System::Com::*,
     Win32::System::LibraryLoader::GetModuleHandleW, Win32::System::RemoteDesktop::*,
-    Win32::UI::HiDpi::SetProcessDpiAwareness, Win32::UI::Input::KeyboardAndMouse::*,
-    Win32::UI::WindowsAndMessaging::*, core::*,
+    Win32::UI::Controls::*, Win32::UI::HiDpi::SetProcessDpiAwareness,
+    Win32::UI::Input::KeyboardAndMouse::*, Win32::UI::WindowsAndMessaging::*, core::*,
 };
 
 mod animations;
@@ -312,6 +312,53 @@ fn main() -> Result<()> {
                     }
                 }
                 if msg.message == WM_KEYDOWN {
+                    let mut can_accept = !PREDICTION.is_empty();
+                    if can_accept && vk == VK_RIGHT.0 as i32 {
+                        let mut start = 0u32;
+                        let mut end = 0u32;
+                        SendMessageW(
+                            H_EDIT,
+                            EM_GETSEL,
+                            Some(WPARAM(&mut start as *mut _ as usize)),
+                            Some(LPARAM(&mut end as *mut _ as isize)),
+                        );
+                        let len = GetWindowTextLengthW(H_EDIT) as u32;
+                        if end < len {
+                            can_accept = false;
+                        }
+                    }
+
+                    if (vk == VK_TAB.0 as i32 || (vk == VK_RIGHT.0 as i32 && can_accept))
+                        && !PREDICTION.is_empty()
+                    {
+                        let pred = PREDICTION.clone();
+                        if let Ok(mut lock) = INPUT_BUFFER.lock() {
+                            *lock = pred.clone();
+                        }
+                        let u16_vec: Vec<u16> =
+                            pred.encode_utf16().chain(std::iter::once(0)).collect();
+                        IS_CYCLING = true;
+                        let _ = SetWindowTextW(H_EDIT, PCWSTR(u16_vec.as_ptr()));
+                        // Select all or move cursor to end? Original Run moves to end/fills.
+                        // We'll move selection to end.
+                        let utf16_len = pred.encode_utf16().count();
+                        SendMessageW(
+                            H_EDIT,
+                            EM_SETSEL,
+                            Some(WPARAM(utf16_len)),
+                            Some(LPARAM(utf16_len as isize)),
+                        );
+                        IS_CYCLING = false;
+                        PREDICTION = String::new();
+                        FILTERED_HISTORY = None;
+                        if SHOW_DROPDOWN {
+                            SHOW_DROPDOWN = false;
+                            let _ = ShowWindow(H_DROPDOWN, SW_HIDE);
+                        }
+                        let _ = InvalidateRect(Some(hwnd), None, false);
+                        continue;
+                    }
+
                     if vk == VK_UP.0 as i32 {
                         cycle_history(-1, H_EDIT);
                         let _ = InvalidateRect(Some(hwnd), None, false);

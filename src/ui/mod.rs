@@ -39,6 +39,7 @@ pub struct Fonts {
     pub tooltip: IDWriteTextFormat,
     pub tooltip_bold: IDWriteTextFormat,
     pub icon: IDWriteTextFormat,
+    pub input: IDWriteTextFormat,
 }
 
 #[repr(C)]
