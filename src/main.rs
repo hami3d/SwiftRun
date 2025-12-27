@@ -177,7 +177,7 @@ fn main() -> Result<()> {
         START_Y = work_area.bottom;
 
         let hwnd_result = CreateWindowExW(
-            WINDOW_EX_STYLE::default(),
+            WS_EX_TOPMOST,
             class_name,
             w!("SwiftRun"),
             WS_POPUP,
@@ -203,7 +203,7 @@ fn main() -> Result<()> {
         let _ = WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION);
 
         H_DROPDOWN = CreateWindowExW(
-            WS_EX_TOOLWINDOW,
+            WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
             dropdown_class_name,
             w!(""),
             WS_POPUP,

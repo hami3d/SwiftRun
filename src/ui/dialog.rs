@@ -1,3 +1,7 @@
+#![allow(unsafe_op_in_unsafe_fn)]
+#![allow(static_mut_refs)]
+#![allow(non_snake_case)]
+
 use windows::Win32::Foundation::*;
 use windows::core::*;
 

@@ -1,3 +1,7 @@
+#![allow(unsafe_op_in_unsafe_fn)]
+#![allow(static_mut_refs)]
+#![allow(non_snake_case)]
+
 use std::time::Instant;
 use windows::Win32::Foundation::*;
 use windows::core::*;
@@ -96,7 +100,7 @@ pub unsafe fn start_exit_animation(hwnd: HWND, kill: bool) {
         return;
     }
 
-    if SHOW_DROPDOWN {
+    if SHOW_DROPDOWN || IsWindowVisible(H_DROPDOWN).as_bool() {
         SHOW_DROPDOWN = false;
         let _ = ShowWindow(H_DROPDOWN, SW_HIDE);
     }
@@ -140,7 +144,7 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
         WM_SIZE => {
             if wp.0 == 1 {
                 // SIZE_MINIMIZED
-                if SHOW_DROPDOWN {
+                if SHOW_DROPDOWN || IsWindowVisible(H_DROPDOWN).as_bool() {
                     SHOW_DROPDOWN = false;
                     let _ = ShowWindow(H_DROPDOWN, SW_HIDE);
                 }
@@ -167,7 +171,7 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
         }
         WM_ACTIVATE => {
             if wp.0 == 0 {
-                if SHOW_DROPDOWN {
+                if SHOW_DROPDOWN || IsWindowVisible(H_DROPDOWN).as_bool() {
                     SHOW_DROPDOWN = false;
                     let _ = ShowWindow(H_DROPDOWN, SW_HIDE);
                     let _ = InvalidateRect(Some(hwnd), None, false);
@@ -428,26 +432,29 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                         );
                     } else {
                         if !SHOW_DROPDOWN {
-                            SHOW_DROPDOWN = true;
-                            HOVER_DROPDOWN = Some(0);
-                            SCROLL_OFFSET = 0;
-                            let mut rect = RECT::default();
-                            let _ = GetWindowRect(hwnd, &mut rect);
-                            let scale = get_dpi_scale(hwnd);
-                            let margin_px = (MARGIN * scale) as i32;
-                            let (x, y) = (
-                                rect.left + margin_px,
-                                rect.top
-                                    + ((INPUT_Y + INPUT_H) * scale) as i32
-                                    + (DROPDOWN_GAP * scale) as i32,
-                            );
-                            let w = (rect.right - rect.left) - (margin_px * 2);
                             let mut drop_h = 0;
                             if let Some(h) = HISTORY.as_ref() {
+                                let scale = get_dpi_scale(hwnd);
                                 drop_h = (h.len().min(DROPDOWN_MAX_ITEMS) as f32 * ITEM_H * scale)
                                     as i32;
                             }
+
                             if drop_h > 0 {
+                                SHOW_DROPDOWN = true;
+                                HOVER_DROPDOWN = Some(0);
+                                SCROLL_OFFSET = 0;
+                                let mut rect = RECT::default();
+                                let _ = GetWindowRect(hwnd, &mut rect);
+                                let scale = get_dpi_scale(hwnd);
+                                let margin_px = (MARGIN * scale) as i32;
+                                let (x, y) = (
+                                    rect.left + margin_px,
+                                    rect.top
+                                        + ((INPUT_Y + INPUT_H) * scale) as i32
+                                        + (DROPDOWN_GAP * scale) as i32,
+                                );
+                                let w = (rect.right - rect.left) - (margin_px * 2);
+
                                 let _ = SetWindowPos(
                                     H_DROPDOWN,
                                     Some(HWND_TOPMOST),
@@ -460,14 +467,13 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                                 DROPDOWN_ANIM_START = Some(Instant::now());
                                 DROPDOWN_ANIM_TYPE = AnimType::Entering;
                                 SetTimer(Some(hwnd), 3, ANIM_TIMER_MS, None);
-                                SHOW_DROPDOWN = false;
-                            } else {
-                                SHOW_DROPDOWN = false;
-                                DROPDOWN_ANIM_START = Some(Instant::now());
-                                DROPDOWN_ANIM_TYPE = AnimType::Exiting;
-                                SetTimer(Some(hwnd), 3, ANIM_TIMER_MS, None);
-                                let _ = InvalidateRect(Some(hwnd), None, false);
                             }
+                        } else {
+                            SHOW_DROPDOWN = false;
+                            DROPDOWN_ANIM_START = Some(Instant::now());
+                            DROPDOWN_ANIM_TYPE = AnimType::Exiting;
+                            SetTimer(Some(hwnd), 3, ANIM_TIMER_MS, None);
+                            let _ = InvalidateRect(Some(hwnd), None, false);
                         }
                     }
 
@@ -510,27 +516,48 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
         }
         WM_HOTKEY => {
             if wp.0 == 1 {
-                if IsWindowVisible(hwnd).as_bool() {
-                    start_exit_animation(hwnd, false);
+                let is_minimized = unsafe { IsIconic(hwnd).as_bool() };
+                if unsafe { IsWindowVisible(hwnd).as_bool() } && !is_minimized {
+                    unsafe {
+                        start_exit_animation(hwnd, false);
+                    }
                 } else {
                     unsafe {
+                        if is_minimized {
+                            let _ = ShowWindow(hwnd, SW_RESTORE);
+                        }
                         update_animation_values(hwnd);
-                    }
-                    let _ = ShowWindow(hwnd, SW_SHOW);
-                    let _ = SetForegroundWindow(hwnd);
-                    let _ = SetFocus(Some(H_EDIT));
-                    ANIM_TYPE = AnimType::Entering;
-                    ANIM_START_TIME = Some(Instant::now());
-                    SetTimer(Some(hwnd), 3, 10, None);
-                    if let Some(history) = &HISTORY {
-                        if let Some(latest) = history.first() {
-                            if let Ok(mut lock) = INPUT_BUFFER.lock() {
-                                *lock = latest.clone();
+
+                        let _ = SetWindowPos(
+                            hwnd,
+                            Some(HWND_TOPMOST),
+                            0,
+                            0,
+                            0,
+                            0,
+                            SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+                        );
+                        let _ = ShowWindow(hwnd, SW_SHOW);
+                        let _ = SetForegroundWindow(hwnd);
+                        let _ = SetFocus(Some(H_EDIT));
+                        ANIM_TYPE = AnimType::Entering;
+                        ANIM_START_TIME = Some(Instant::now());
+                        SetTimer(Some(hwnd), 3, 10, None);
+                        if let Some(history) = &HISTORY {
+                            if let Some(latest) = history.first() {
+                                if let Ok(mut lock) = INPUT_BUFFER.lock() {
+                                    *lock = latest.clone();
+                                }
+                                let latest_u16: Vec<u16> =
+                                    latest.encode_utf16().chain(std::iter::once(0)).collect();
+                                let _ = SetWindowTextW(H_EDIT, PCWSTR(latest_u16.as_ptr()));
+                                let _ = SendMessageW(
+                                    H_EDIT,
+                                    EM_SETSEL,
+                                    Some(WPARAM(0)),
+                                    Some(LPARAM(-1)),
+                                );
                             }
-                            let latest_u16: Vec<u16> =
-                                latest.encode_utf16().chain(std::iter::once(0)).collect();
-                            let _ = SetWindowTextW(H_EDIT, PCWSTR(latest_u16.as_ptr()));
-                            SendMessageW(H_EDIT, EM_SETSEL, Some(WPARAM(0)), Some(LPARAM(-1)));
                         }
                     }
                 }
