@@ -10,6 +10,11 @@ use std::process::Command;
 const APP_BYTES: &[u8] = include_bytes!("../target/release/swift_run.exe");
 
 fn main() {
+    // Ensure the app is not running before we try to overwrite it
+    let _ = Command::new("taskkill")
+        .args(&["/F", "/IM", "swift_run.exe", "/T"])
+        .output();
+
     let local_app_data = env::var("LOCALAPPDATA").expect("Failed to get LOCALAPPDATA");
     let mut install_dir = PathBuf::from(local_app_data);
     install_dir.push("SwiftRun");
@@ -25,8 +30,25 @@ fn main() {
     exe_path.push("swift_run.exe");
 
     // Copy (extract) the embedded app to the install directory
-    if let Err(e) = fs::write(&exe_path, APP_BYTES) {
-        eprintln!("Failed to write swift_run.exe: {:?}", e);
+    // We retry a few times in case the process is still releasing the file handle
+    let mut written = false;
+    for _ in 0..50 {
+        if exe_path.exists() {
+            let _ = fs::remove_file(&exe_path);
+        }
+
+        if let Err(_e) = fs::write(&exe_path, APP_BYTES) {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        } else {
+            written = true;
+            break;
+        }
+    }
+
+    if !written {
+        eprintln!(
+            "Failed to write swift_run.exe after multiple attempts. Please close the app manually."
+        );
         return;
     }
 
@@ -37,7 +59,10 @@ fn main() {
         Ok(s) if s.success() => {
             // Success! The app has performed installation and closed.
             // Now spawn the app for real and exit.
-            let _ = Command::new(&exe_path).spawn();
+            // We use cmd /c start to help detach from the installer and potentially run as user
+            let _ = Command::new("cmd")
+                .args(&["/C", "start", "", &exe_path.to_string_lossy()])
+                .spawn();
         }
         _ => {
             eprintln!("Installation failed or was cancelled.");

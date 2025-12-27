@@ -10,9 +10,14 @@ use windows::core::*;
 const APP_BYTES: &[u8] = include_bytes!("../target/release/swift_run.exe");
 
 fn main() {
-    let mut install_path: Option<PathBuf> = None;
+    let local_app_data = env::var("LOCALAPPDATA").unwrap_or_default();
+    let mut install_dir = PathBuf::from(&local_app_data);
+    install_dir.push("SwiftRun");
 
-    // 1. First, try to find where the app IS installed (for cleanup later)
+    let mut exe_path = install_dir.clone();
+    exe_path.push("swift_run.exe");
+
+    // 1. Try to find the actual exe path from registry (it might be different)
     unsafe {
         let run_key_path = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
         let mut h_key = HKEY::default();
@@ -37,51 +42,65 @@ fn main() {
             )
             .is_ok()
             {
-                let path_str =
+                let full_str =
                     String::from_utf16_lossy(&data[..(size as usize / 2).saturating_sub(1)]);
-                install_path = Some(PathBuf::from(path_str));
+                // Strip arguments (e.g. "C:\path\to\exe" --background)
+                let actual_path = if let Some(idx) = full_str.find(".exe") {
+                    &full_str[..idx + 4]
+                } else {
+                    &full_str
+                };
+                exe_path = PathBuf::from(actual_path.trim_matches('"'));
             }
             let _ = RegCloseKey(h_key);
         }
     }
 
-    // 2. Extract embedded app to target\release (or temp)
-    let temp_dir = env::temp_dir();
-    let temp_exe = temp_dir.join("swift_run_uninstall_helper.exe");
-    if let Err(e) = fs::write(&temp_exe, APP_BYTES) {
-        // Fallback: If we can't write to temp, try to use the existing path if it exists
-        if install_path.is_none() || !install_path.as_ref().unwrap().exists() {
-            eprintln!("Failed to extract uninstaller helper: {:?}", e);
+    // 2. Kill the app before extraction or cleanup
+    let _ = Command::new("taskkill")
+        .args(&["/F", "/IM", "swift_run.exe", "/T"])
+        .output();
+
+    // 3. Extract uninstaller helper to temp
+    let temp_exe = env::temp_dir().join("swift_run_uninstall_helper.exe");
+    if let Err(_) = fs::write(&temp_exe, APP_BYTES) {
+        // If we can't write to temp, try to use the existing one if it's there
+        if !exe_path.exists() {
             return;
         }
     }
 
-    // 3. Run the extracted app with --uninstall
-    // This will perform registry cleanup, restart explorer, and show the CUSTOM FLUENT DIALOG.
-    let target_exe = if temp_exe.exists() {
+    // 4. Run the helper with --uninstall
+    let target_runner = if temp_exe.exists() {
         &temp_exe
     } else {
-        install_path.as_ref().unwrap()
+        &exe_path
     };
-    let status = Command::new(target_exe).arg("--uninstall").status();
+    let _ = Command::new(target_runner).arg("--uninstall").status();
 
-    // 4. Cleanup the installation folder
-    if let Ok(s) = status {
-        if s.success() {
-            if let Some(path) = install_path {
-                if path.exists() {
-                    let _ = fs::remove_file(&path);
-                    if let Some(parent) = path.parent() {
-                        if parent.ends_with("SwiftRun") {
-                            let _ = fs::remove_dir_all(parent);
-                        }
-                    }
-                }
+    // 5. Aggressive cleanup loop
+    for _ in 0..20 {
+        if exe_path.exists() {
+            let _ = fs::remove_file(&exe_path);
+        }
+        if let Some(parent) = exe_path.parent() {
+            if parent.exists() && parent.ends_with("SwiftRun") {
+                let _ = fs::remove_dir_all(parent);
             }
         }
+
+        // Also check the default path just in case
+        if install_dir.exists() {
+            let _ = fs::remove_dir_all(&install_dir);
+        }
+
+        if !exe_path.exists() && !install_dir.exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
     }
 
-    // 5. Cleanup the temp exe
+    // 6. Final cleanup of temp helper
     if temp_exe.exists() {
         let _ = fs::remove_file(&temp_exe);
     }

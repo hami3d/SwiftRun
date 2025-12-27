@@ -29,3 +29,4 @@ pub static INPUT_BUFFER: Mutex<String> = Mutex::new(String::new());
 pub const WM_APP_RUN_COMMAND: u32 = 1025;
 pub const WM_APP_CLOSE: u32 = 1026;
 pub const WM_APP_ERROR: u32 = 1027;
+pub const WM_APP_SHOW_UI: u32 = 1028;

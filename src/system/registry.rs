@@ -18,7 +18,8 @@ pub fn manage_registry_hooks(install: bool) -> Result<()> {
         {
             if install {
                 if let Ok(exe_path) = std::env::current_exe() {
-                    let path_str = exe_path.to_string_lossy().to_string();
+                    let mut path_str = exe_path.to_string_lossy().to_string();
+                    path_str.push_str(" --background");
                     let path_u16: Vec<u16> =
                         path_str.encode_utf16().chain(std::iter::once(0)).collect();
                     let data = std::slice::from_raw_parts(

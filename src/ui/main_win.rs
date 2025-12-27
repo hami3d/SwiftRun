@@ -16,6 +16,7 @@ use windows::Win32::Graphics::Imaging::*;
 use windows::Win32::System::Com::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::SystemInformation::GetTickCount;
+use windows::Win32::System::Threading::*;
 use windows::Win32::UI::Controls::*;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
@@ -220,6 +221,66 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             }
             LRESULT(0)
         }
+        WM_APP_SHOW_UI => {
+            // Restore if minimized
+            if IsIconic(hwnd).as_bool() {
+                let _ = ShowWindow(hwnd, SW_RESTORE);
+            } else {
+                let _ = ShowWindow(hwnd, SW_SHOW);
+            }
+
+            // The absolute most reliable way to force to foreground: AttachThreadInput trick
+            let h_fore = GetForegroundWindow();
+            let fore_thread = GetWindowThreadProcessId(h_fore, None);
+            let app_thread = GetCurrentThreadId();
+
+            if fore_thread != app_thread && fore_thread != 0 {
+                let _ = AttachThreadInput(fore_thread, app_thread, true);
+                let _ = BringWindowToTop(hwnd);
+                let _ = SetForegroundWindow(hwnd);
+                let _ = AttachThreadInput(fore_thread, app_thread, false);
+            } else {
+                let _ = SetForegroundWindow(hwnd);
+            }
+
+            // Force Z-order jump just in case
+            let _ = SetWindowPos(
+                hwnd,
+                Some(HWND_TOPMOST),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE,
+            );
+            let _ = SetWindowPos(
+                hwnd,
+                Some(HWND_NOTOPMOST),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE,
+            );
+            let _ = SetWindowPos(
+                hwnd,
+                Some(HWND_TOPMOST),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE,
+            );
+
+            let _ = SetFocus(Some(H_EDIT));
+            SendMessageW(H_EDIT, EM_SETSEL, Some(WPARAM(0)), Some(LPARAM(-1)));
+
+            ANIM_TYPE = AnimType::Entering;
+            ANIM_START_TIME = Some(Instant::now());
+            SetTimer(Some(hwnd), 3, ANIM_TIMER_MS, None);
+
+            LRESULT(0)
+        }
         WM_CLOSE => {
             start_exit_animation(hwnd, false);
             LRESULT(0)
@@ -273,11 +334,16 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             let lx = x - wr.left;
             let ly = y - wr.top;
             let width = (wr.right - wr.left) as f32;
+            let height = (wr.bottom - wr.top) as f32;
             let scale = get_dpi_scale(hwnd);
+
             let slx = lx as f32 / scale;
             let sly = ly as f32 / scale;
+            let sw = width / scale;
+            let sh = height / scale;
 
-            if sly < TITLE_BAR_H && slx < (width / scale) - WIN_BTN_W * 2.0 {
+            let hit = hit_test(slx as i32, sly as i32, sw, sh, is_input_empty());
+            if hit == HoverId::None {
                 return LRESULT(HTCAPTION as isize);
             }
             LRESULT(HTCLIENT as isize)
@@ -331,7 +397,7 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                                 current_y,
                                 0,
                                 0,
-                                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+                                SWP_NOSIZE | SWP_NOZORDER,
                             );
                             if progress < 1.0 {
                                 still_animating = true;

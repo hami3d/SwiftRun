@@ -25,6 +25,7 @@ use data::history::*;
 use system::explorer::*;
 use system::hotkeys::*;
 use system::registry::*;
+use system::shortcut::*;
 use ui::resources::*;
 use ui::*;
 
@@ -124,6 +125,25 @@ fn main() -> Result<()> {
         let _ = RegisterClassW(&wc_dialog);
 
         let args: Vec<String> = std::env::args().collect();
+
+        // Single instance check
+        if let Ok(existing_hwnd) = FindWindowW(w!("SwiftRunClass"), w!("SwiftRun")) {
+            if !existing_hwnd.0.is_null() {
+                if args.len() == 1 || (args.len() > 1 && args[1] == "--show") {
+                    let mut pid = 0u32;
+                    GetWindowThreadProcessId(existing_hwnd, Some(&mut pid));
+                    let _ = AllowSetForegroundWindow(pid);
+                    let _ = SendMessageW(
+                        existing_hwnd,
+                        WM_APP_SHOW_UI,
+                        Some(WPARAM(0)),
+                        Some(LPARAM(0)),
+                    );
+                    return Ok(());
+                }
+            }
+        }
+
         if args.len() > 1 {
             if args[1] == "--install" {
                 if let Err(e) = manage_registry_hooks(true) {
@@ -133,6 +153,7 @@ fn main() -> Result<()> {
                     );
                     return Err(e.into());
                 }
+                let _ = manage_start_menu_shortcut(true);
                 show_fluent_dialog(
                     "SwiftRun Setup",
                     "SwiftRun installed! Explorer will now restart to finalize the takeover.",
@@ -148,6 +169,7 @@ fn main() -> Result<()> {
                     );
                     return Err(e.into());
                 }
+                let _ = manage_start_menu_shortcut(false);
                 show_fluent_dialog(
                     "SwiftRun Setup",
                     "SwiftRun uninstalled! Win+R will return to default behavior after restart.",
@@ -198,6 +220,7 @@ fn main() -> Result<()> {
             }
         };
         H_MAIN = hwnd;
+        let _ = ChangeWindowMessageFilterEx(hwnd, WM_APP_SHOW_UI, MSGFLT_ALLOW, None);
 
         register_hotkeys(hwnd);
         let _ = WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION);
@@ -293,9 +316,17 @@ fn main() -> Result<()> {
             if blink_time == 0 { 500 } else { blink_time },
             None,
         );
-        ANIM_TYPE = AnimType::Entering;
-        ANIM_START_TIME = Some(Instant::now());
-        SetTimer(Some(hwnd), 3, ANIM_TIMER_MS, None);
+        let should_show = args.len() == 1 || (args.len() > 1 && args[1] == "--show");
+        if should_show {
+            let _ = ShowWindow(hwnd, SW_SHOW);
+            let _ = SetForegroundWindow(hwnd);
+            let _ = SetFocus(Some(H_EDIT));
+            ANIM_TYPE = AnimType::Entering;
+            ANIM_START_TIME = Some(Instant::now());
+            SetTimer(Some(hwnd), 3, ANIM_TIMER_MS, None);
+        } else {
+            let _ = ShowWindow(hwnd, SW_HIDE);
+        }
         // Heartbeat timer to ensure hotkeys stay registered (Timer ID 4, every 30s)
         SetTimer(Some(hwnd), 4, 30000, None);
 
