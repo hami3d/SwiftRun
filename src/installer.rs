@@ -59,10 +59,8 @@ fn main() {
         Ok(s) if s.success() => {
             // Success! The app has performed installation and closed.
             // Now spawn the app for real and exit.
-            // We use cmd /c start to help detach from the installer and potentially run as user
-            let _ = Command::new("cmd")
-                .args(&["/C", "start", "", &exe_path.to_string_lossy()])
-                .spawn();
+            // We launch via explorer.exe to ensure it runs as standard user even if installer is admin
+            let _ = Command::new("explorer.exe").arg(&exe_path).spawn();
         }
         _ => {
             eprintln!("Installation failed or was cancelled.");

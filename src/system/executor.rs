@@ -7,7 +7,6 @@ use windows::Win32::Foundation::*;
 
 use windows::Win32::System::Com::*;
 use windows::Win32::System::Environment::*;
-use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::Shell::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::*;
@@ -15,7 +14,7 @@ use windows::core::*;
 use crate::data::history::*;
 use crate::ui::resources::*;
 
-pub unsafe fn run_command() {
+pub unsafe fn run_command(elevated: bool) {
     let mut input_str = String::new();
     if let Ok(buf) = INPUT_BUFFER.lock() {
         if !buf.is_empty() {
@@ -48,13 +47,13 @@ pub unsafe fn run_command() {
 
             let mut file_path = input_str.clone();
             let mut params = String::new();
-            let mut verb = PCWSTR::null();
+            let verb = if elevated {
+                w!("runas")
+            } else {
+                PCWSTR::null()
+            };
 
             if !is_url {
-                if GetKeyState(VK_CONTROL.0 as i32) < 0 && GetKeyState(VK_SHIFT.0 as i32) < 0 {
-                    verb = w!("runas");
-                }
-
                 // Improved parsing: if it's an absolute path to an existing file/dir, don't split by spaces unless quoted
                 let path_exists = std::path::Path::new(&input_str).exists();
                 if !path_exists {

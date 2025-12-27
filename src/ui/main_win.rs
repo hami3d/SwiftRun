@@ -201,7 +201,7 @@ pub unsafe fn start_exit_animation(hwnd: HWND, kill: bool) {
 pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
         WM_APP_RUN_COMMAND => {
-            run_command();
+            run_command(wp.0 != 0);
             LRESULT(0)
         }
         WM_APP_CLOSE => {
@@ -552,7 +552,7 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                     }
                     let _ = ShowWindow(hwnd, SW_MINIMIZE);
                 }
-                HoverId::Ok => run_command(),
+                HoverId::Ok => run_command(false),
                 HoverId::Cancel => start_exit_animation(hwnd, false),
                 HoverId::Input => {
                     let _ = SetCapture(hwnd);

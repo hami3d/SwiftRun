@@ -421,7 +421,15 @@ fn main() -> Result<()> {
                         continue;
                     }
                     if vk == VK_RETURN.0 as i32 {
-                        let _ = PostMessageW(Some(hwnd), WM_APP_RUN_COMMAND, WPARAM(0), LPARAM(0));
+                        let is_elevated = (GetKeyState(VK_CONTROL.0 as i32) < 0
+                            && GetKeyState(VK_SHIFT.0 as i32) < 0)
+                            as usize;
+                        let _ = PostMessageW(
+                            Some(hwnd),
+                            WM_APP_RUN_COMMAND,
+                            WPARAM(is_elevated),
+                            LPARAM(0),
+                        );
                         continue;
                     }
                 }

@@ -28,6 +28,7 @@ I'm using Windows 11 25H2 and tested it here, so submit an issue if you have any
 
 - **Win + R**: Open SwiftRun (replaces system Run).
 - **Enter**: Run the command.
+- **Ctrl + Shift + Enter**: Run command as Administrator (Elevated).
 - **Esc**: Close SwiftRun.
 - **Up / Down**: Cycle through command history.
 - **Ctrl + Shift + Backspace**: Clear all command history.

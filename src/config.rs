@@ -80,7 +80,7 @@ pub const ANIM_ENTER_DURATION_MS: u128 = 350;
 pub const ANIM_EXIT_DURATION_MS: u128 = 150;
 pub const ANIM_DROPDOWN_DURATION_MS: u128 = 200;
 pub const ANIM_TOOLTIP_DURATION_MS: u128 = 300;
-pub const ANIM_TIMER_MS: u32 = 8; // ~120fps requested smoothness
+pub const ANIM_TIMER_MS: u32 = 1; // High-frequency timer for maximum smoothness (limited by monitor refresh)
 
 // ----------------------------------------------------------------------------------
 //  COLORS (THEME)
