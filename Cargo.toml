@@ -36,6 +36,7 @@ features = [
     "Win32_Media",
     "Win32_System_Power",
     "Win32_System_RemoteDesktop",
+    "Win32_System_Environment",
 ]
 
 [[bin]]
