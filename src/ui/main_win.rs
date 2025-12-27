@@ -576,8 +576,8 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                     let is_empty = HISTORY.as_ref().map_or(true, |h| h.is_empty());
                     if is_empty {
                         show_tooltip(
-                            "History Cleared",
-                            "The command history has been successfully removed.",
+                            "History is empty",
+                            "Your command history is currently empty.",
                         );
                     } else {
                         if !SHOW_DROPDOWN {
