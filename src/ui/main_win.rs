@@ -381,96 +381,7 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             if wp.0 == 1 {
                 let _ = InvalidateRect(Some(hwnd), None, false);
             } else if wp.0 == 3 {
-                let mut still_animating = false;
-                if let Some(start) = ANIM_START_TIME {
-                    let elapsed = start.elapsed().as_millis();
-                    match ANIM_TYPE {
-                        AnimType::Entering => {
-                            let progress =
-                                (elapsed as f32 / ANIM_ENTER_DURATION_MS as f32).min(1.0);
-                            let eased = ease_out_cubic(progress);
-                            let current_y = START_Y - ((START_Y - FINAL_Y) as f32 * eased) as i32;
-                            let _ = SetWindowPos(
-                                hwnd,
-                                None,
-                                FINAL_X,
-                                current_y,
-                                0,
-                                0,
-                                SWP_NOSIZE | SWP_NOZORDER,
-                            );
-                            if progress < 1.0 {
-                                still_animating = true;
-                            } else {
-                                ANIM_TYPE = AnimType::None;
-                                let _ = SetWindowPos(
-                                    hwnd,
-                                    None,
-                                    FINAL_X,
-                                    FINAL_Y,
-                                    0,
-                                    0,
-                                    SWP_NOSIZE | SWP_NOZORDER,
-                                );
-                            }
-                        }
-                        AnimType::Exiting => {
-                            let progress = (elapsed as f32 / ANIM_EXIT_DURATION_MS as f32).min(1.0);
-                            let eased = ease_out_quad(progress);
-                            let current_y = FINAL_Y + ((START_Y - FINAL_Y) as f32 * eased) as i32;
-                            let _ = SetWindowPos(
-                                hwnd,
-                                None,
-                                FINAL_X,
-                                current_y,
-                                0,
-                                0,
-                                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
-                            );
-                            if progress < 1.0 {
-                                still_animating = true;
-                            } else {
-                                ANIM_TYPE = AnimType::None;
-                                if EXIT_KILL_PROCESS {
-                                    PostQuitMessage(0);
-                                } else {
-                                    let _ = ShowWindow(hwnd, SW_HIDE);
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                if let Some(start) = DROPDOWN_ANIM_START {
-                    let elapsed = start.elapsed().as_millis();
-                    let progress = (elapsed as f32 / ANIM_DROPDOWN_DURATION_MS as f32).min(1.0);
-                    if progress < 1.0 {
-                        still_animating = true;
-                    } else if DROPDOWN_ANIM_TYPE == AnimType::Exiting {
-                        let _ = ShowWindow(H_DROPDOWN, SW_HIDE);
-                        DROPDOWN_ANIM_TYPE = AnimType::None;
-                    } else {
-                        DROPDOWN_ANIM_TYPE = AnimType::None;
-                    }
-                    let _ = InvalidateRect(Some(H_DROPDOWN), None, false);
-                }
-                if let Some(start) = TOOLTIP_ANIM_START {
-                    let elapsed = start.elapsed().as_millis();
-                    let progress = (elapsed as f32 / ANIM_TOOLTIP_DURATION_MS as f32).min(1.0);
-                    if progress < 1.0 {
-                        still_animating = true;
-                    } else if TOOLTIP_ANIM_TYPE == AnimType::Exiting {
-                        let _ = DestroyWindow(H_TOOLTIP);
-                        H_TOOLTIP = HWND(std::ptr::null_mut());
-                        TOOLTIP_ANIM_TYPE = AnimType::None;
-                    } else {
-                        TOOLTIP_ANIM_TYPE = AnimType::None;
-                    }
-                    let _ = InvalidateRect(Some(H_TOOLTIP), None, false);
-                }
-                if !still_animating {
-                    let _ = KillTimer(Some(hwnd), 3);
-                }
+                update_animations(hwnd);
             } else if wp.0 == 4 {
                 // Heartbeat: re-register hotkeys just in case
                 register_hotkeys(hwnd);
@@ -1591,4 +1502,88 @@ unsafe fn update_animation_values(hwnd: HWND) {
         let final_x = work_area.left + margin;
         FINAL_X = final_x;
     }
+}
+pub unsafe fn update_animations(hwnd: HWND) {
+    if let Some(start) = ANIM_START_TIME {
+        let elapsed = start.elapsed().as_millis();
+        match ANIM_TYPE {
+            AnimType::Entering => {
+                let progress = (elapsed as f32 / ANIM_ENTER_DURATION_MS as f32).min(1.0);
+                let eased = ease_out_cubic(progress);
+                let current_y = START_Y - ((START_Y - FINAL_Y) as f32 * eased) as i32;
+                let _ = SetWindowPos(
+                    hwnd,
+                    None,
+                    FINAL_X,
+                    current_y,
+                    0,
+                    0,
+                    SWP_NOSIZE | SWP_NOZORDER,
+                );
+                if progress >= 1.0 {
+                    ANIM_TYPE = AnimType::None;
+                    let _ = SetWindowPos(
+                        hwnd,
+                        None,
+                        FINAL_X,
+                        FINAL_Y,
+                        0,
+                        0,
+                        SWP_NOSIZE | SWP_NOZORDER,
+                    );
+                }
+            }
+            AnimType::Exiting => {
+                let progress = (elapsed as f32 / ANIM_EXIT_DURATION_MS as f32).min(1.0);
+                let eased = ease_out_quad(progress);
+                let current_y = FINAL_Y + ((START_Y - FINAL_Y) as f32 * eased) as i32;
+                let _ = SetWindowPos(
+                    hwnd,
+                    None,
+                    FINAL_X,
+                    current_y,
+                    0,
+                    0,
+                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+                );
+                if progress >= 1.0 {
+                    ANIM_TYPE = AnimType::None;
+                    if EXIT_KILL_PROCESS {
+                        PostQuitMessage(0);
+                    } else {
+                        let _ = ShowWindow(hwnd, SW_HIDE);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if let Some(start) = DROPDOWN_ANIM_START {
+        let elapsed = start.elapsed().as_millis();
+        let progress = (elapsed as f32 / ANIM_DROPDOWN_DURATION_MS as f32).min(1.0);
+        if progress >= 1.0 {
+            if DROPDOWN_ANIM_TYPE == AnimType::Exiting {
+                let _ = ShowWindow(H_DROPDOWN, SW_HIDE);
+            }
+            DROPDOWN_ANIM_TYPE = AnimType::None;
+            DROPDOWN_ANIM_START = None;
+        }
+        let _ = InvalidateRect(Some(H_DROPDOWN), None, false);
+    }
+
+    if let Some(start) = TOOLTIP_ANIM_START {
+        let elapsed = start.elapsed().as_millis();
+        let progress = (elapsed as f32 / ANIM_TOOLTIP_DURATION_MS as f32).min(1.0);
+        if progress >= 1.0 {
+            if TOOLTIP_ANIM_TYPE == AnimType::Exiting {
+                let _ = ShowWindow(H_TOOLTIP, SW_HIDE);
+            }
+            TOOLTIP_ANIM_TYPE = AnimType::None;
+            TOOLTIP_ANIM_START = None;
+        }
+        let _ = InvalidateRect(Some(H_TOOLTIP), None, false);
+    }
+
+    let _ = InvalidateRect(Some(hwnd), None, false);
 }

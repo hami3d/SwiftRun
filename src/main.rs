@@ -331,116 +331,103 @@ fn main() -> Result<()> {
         SetTimer(Some(hwnd), 4, 30000, None);
 
         let mut msg = MSG::default();
-        while GetMessageW(&mut msg, None, 0, 0).into() {
-            if (msg.message == WM_KEYDOWN || msg.message == WM_KEYUP) && msg.hwnd == H_EDIT {
-                let vk = msg.wParam.0 as i32;
-                if msg.message == WM_KEYDOWN && vk == VK_RETURN.0 as i32 {
-                    if let Ok(cmd) = INPUT_BUFFER.lock() {
-                        if cmd.trim() == ":quit" || cmd.trim() == ":exit" {
-                            start_exit_animation(hwnd, true);
-                            continue;
+        loop {
+            if PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                if msg.message == WM_QUIT {
+                    break;
+                }
+
+                if (msg.message == WM_KEYDOWN || msg.message == WM_KEYUP) && msg.hwnd == H_EDIT {
+                    let vk = msg.wParam.0 as i32;
+                    if msg.message == WM_KEYDOWN {
+                        match vk {
+                            v if v == VK_RETURN.0 as i32 => {
+                                let is_elevated = (GetKeyState(VK_CONTROL.0 as i32) < 0
+                                    && GetKeyState(VK_SHIFT.0 as i32) < 0)
+                                    as usize;
+                                let _ = PostMessageW(
+                                    Some(hwnd),
+                                    WM_APP_RUN_COMMAND,
+                                    WPARAM(is_elevated),
+                                    LPARAM(0),
+                                );
+                            }
+                            v if v == VK_UP.0 as i32 => {
+                                cycle_history(-1, H_EDIT);
+                                let _ = InvalidateRect(Some(hwnd), None, false);
+                            }
+                            v if v == VK_DOWN.0 as i32 => {
+                                cycle_history(1, H_EDIT);
+                                let _ = InvalidateRect(Some(hwnd), None, false);
+                            }
+                            v if v == VK_TAB.0 as i32
+                                || (v == VK_RIGHT.0 as i32 && !PREDICTION.is_empty()) =>
+                            {
+                                // Prediction acceptance logic...
+                                let pred = PREDICTION.clone();
+                                if !pred.is_empty() {
+                                    if let Ok(mut lock) = INPUT_BUFFER.lock() {
+                                        *lock = pred.clone();
+                                    }
+                                    let u16_vec: Vec<u16> =
+                                        pred.encode_utf16().chain(std::iter::once(0)).collect();
+                                    IS_CYCLING = true;
+                                    let _ = SetWindowTextW(H_EDIT, PCWSTR(u16_vec.as_ptr()));
+                                    let utf16_len = pred.encode_utf16().count();
+                                    SendMessageW(
+                                        H_EDIT,
+                                        EM_SETSEL,
+                                        Some(WPARAM(utf16_len)),
+                                        Some(LPARAM(utf16_len as isize)),
+                                    );
+                                    IS_CYCLING = false;
+                                    PREDICTION = String::new();
+                                    FILTERED_HISTORY = None;
+                                    if SHOW_DROPDOWN {
+                                        SHOW_DROPDOWN = false;
+                                        let _ = ShowWindow(H_DROPDOWN, SW_HIDE);
+                                    }
+                                    let _ = InvalidateRect(Some(hwnd), None, false);
+                                }
+                            }
+                            v if v == VK_BACK.0 as i32
+                                && GetKeyState(VK_CONTROL.0 as i32) < 0
+                                && GetKeyState(VK_SHIFT.0 as i32) < 0 =>
+                            {
+                                if let Some(path) = get_history_path() {
+                                    let _ = fs::remove_file(path);
+                                }
+                                HISTORY = Some(Vec::new());
+                                HISTORY_INDEX = -1;
+                                if SHOW_DROPDOWN {
+                                    SHOW_DROPDOWN = false;
+                                    let _ = ShowWindow(H_DROPDOWN, SW_HIDE);
+                                }
+                                show_tooltip(
+                                    "History Cleared",
+                                    "The command history has been successfully removed.",
+                                );
+                                let _ = InvalidateRect(Some(hwnd), None, false);
+                            }
+                            _ => {}
                         }
                     }
                 }
-                if msg.message == WM_KEYDOWN {
-                    let mut can_accept = !PREDICTION.is_empty();
-                    if can_accept && vk == VK_RIGHT.0 as i32 {
-                        let mut start = 0u32;
-                        let mut end = 0u32;
-                        SendMessageW(
-                            H_EDIT,
-                            EM_GETSEL,
-                            Some(WPARAM(&mut start as *mut _ as usize)),
-                            Some(LPARAM(&mut end as *mut _ as isize)),
-                        );
-                        let len = GetWindowTextLengthW(H_EDIT) as u32;
-                        if end < len {
-                            can_accept = false;
-                        }
-                    }
 
-                    if (vk == VK_TAB.0 as i32 || (vk == VK_RIGHT.0 as i32 && can_accept))
-                        && !PREDICTION.is_empty()
-                    {
-                        let pred = PREDICTION.clone();
-                        if let Ok(mut lock) = INPUT_BUFFER.lock() {
-                            *lock = pred.clone();
-                        }
-                        let u16_vec: Vec<u16> =
-                            pred.encode_utf16().chain(std::iter::once(0)).collect();
-                        IS_CYCLING = true;
-                        let _ = SetWindowTextW(H_EDIT, PCWSTR(u16_vec.as_ptr()));
-                        // Select all or move cursor to end? Original Run moves to end/fills.
-                        // We'll move selection to end.
-                        let utf16_len = pred.encode_utf16().count();
-                        SendMessageW(
-                            H_EDIT,
-                            EM_SETSEL,
-                            Some(WPARAM(utf16_len)),
-                            Some(LPARAM(utf16_len as isize)),
-                        );
-                        IS_CYCLING = false;
-                        PREDICTION = String::new();
-                        FILTERED_HISTORY = None;
-                        if SHOW_DROPDOWN {
-                            SHOW_DROPDOWN = false;
-                            let _ = ShowWindow(H_DROPDOWN, SW_HIDE);
-                        }
-                        let _ = InvalidateRect(Some(hwnd), None, false);
-                        continue;
-                    }
-
-                    if vk == VK_UP.0 as i32 {
-                        cycle_history(-1, H_EDIT);
-                        let _ = InvalidateRect(Some(hwnd), None, false);
-                        continue;
-                    }
-                    if vk == VK_DOWN.0 as i32 {
-                        cycle_history(1, H_EDIT);
-                        let _ = InvalidateRect(Some(hwnd), None, false);
-                        continue;
-                    }
-                    if GetKeyState(VK_CONTROL.0 as i32) < 0
-                        && GetKeyState(VK_SHIFT.0 as i32) < 0
-                        && vk == VK_BACK.0 as i32
-                    {
-                        if let Some(path) = get_history_path() {
-                            let _ = fs::remove_file(path);
-                        }
-                        HISTORY = Some(Vec::new());
-                        HISTORY_INDEX = -1;
-                        if SHOW_DROPDOWN {
-                            SHOW_DROPDOWN = false;
-                            let _ = ShowWindow(H_DROPDOWN, SW_HIDE);
-                        }
-                        show_tooltip(
-                            "History Cleared",
-                            "The command history has been successfully removed.",
-                        );
-                        let _ = InvalidateRect(Some(hwnd), None, false);
-                        continue;
-                    }
-                    if vk == VK_RETURN.0 as i32 {
-                        let is_elevated = (GetKeyState(VK_CONTROL.0 as i32) < 0
-                            && GetKeyState(VK_SHIFT.0 as i32) < 0)
-                            as usize;
-                        let _ = PostMessageW(
-                            Some(hwnd),
-                            WM_APP_RUN_COMMAND,
-                            WPARAM(is_elevated),
-                            LPARAM(0),
-                        );
-                        continue;
-                    }
+                if msg.message == WM_KEYDOWN && msg.wParam.0 == 0x1B {
+                    start_exit_animation(hwnd, false);
                 }
-                let _ = InvalidateRect(Some(hwnd), None, false);
+
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            } else {
+                if is_any_animation_active() {
+                    let _ = DwmFlush();
+                    update_animations(hwnd);
+                } else {
+                    WaitMessage().ok();
+                }
             }
-            if msg.message == WM_KEYDOWN && msg.wParam.0 == 0x1B {
-                start_exit_animation(hwnd, false);
-                continue;
-            }
-            let _ = TranslateMessage(&msg);
-            DispatchMessageW(&msg);
         }
         let _ = timeEndPeriod(1);
     }

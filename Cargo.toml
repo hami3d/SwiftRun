@@ -1,6 +1,6 @@
 [package]
 name = "swift_run"
-version = "0.8.3-beta"
+version = "0.8.4-beta"
 edition = "2024"
 
 [dependencies]

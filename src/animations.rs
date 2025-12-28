@@ -33,3 +33,10 @@ pub fn ease_out_back(t: f32) -> f32 {
     let c3 = c1 + 1.0;
     1.0 + c3 * (t - 1.0).powi(3) + c1 * (t - 1.0).powi(2)
 }
+pub fn is_any_animation_active() -> bool {
+    unsafe {
+        ANIM_TYPE != AnimType::None
+            || DROPDOWN_ANIM_TYPE != AnimType::None
+            || TOOLTIP_ANIM_TYPE != AnimType::None
+    }
+}
