@@ -76,7 +76,7 @@ pub const FONT_SZ_INPUT: i32 = 20;
 // ----------------------------------------------------------------------------------
 //  ANIMATIONS
 // ----------------------------------------------------------------------------------
-pub const ANIM_ENTER_DURATION_MS: u128 = 350;
+pub const ANIM_ENTER_DURATION_MS: u128 = 250;
 pub const ANIM_EXIT_DURATION_MS: u128 = 150;
 pub const ANIM_DROPDOWN_DURATION_MS: u128 = 200;
 pub const ANIM_TOOLTIP_DURATION_MS: u128 = 300;

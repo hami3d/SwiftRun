@@ -194,7 +194,7 @@ pub unsafe fn start_exit_animation(hwnd: HWND, kill: bool) {
     }
 
     ANIM_TYPE = AnimType::Exiting;
-    ANIM_START_TIME = Some(Instant::now());
+    ANIM_START_TIME = None;
     SetTimer(Some(hwnd), 3, ANIM_TIMER_MS, None);
 }
 
@@ -276,7 +276,7 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             SendMessageW(H_EDIT, EM_SETSEL, Some(WPARAM(0)), Some(LPARAM(-1)));
 
             ANIM_TYPE = AnimType::Entering;
-            ANIM_START_TIME = Some(Instant::now());
+            ANIM_START_TIME = None;
             SetTimer(Some(hwnd), 3, ANIM_TIMER_MS, None);
 
             LRESULT(0)
@@ -298,7 +298,23 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                     width: (lp.0 & 0xFFFF) as u32,
                     height: ((lp.0 >> 16) & 0xFFFF) as u32,
                 };
-                let _ = target.Resize(&size);
+
+                // Guard against 0-size (minimized/hidden) to preserve cache
+                if size.width > 0 && size.height > 0 {
+                    // Only invalidate if size ACTUALLY changed
+                    let old_size = target.GetPixelSize();
+                    if old_size.width != size.width || old_size.height != size.height {
+                        let _ = target.Resize(&size);
+                        CACHED_TEXT_LAYOUT = None;
+                        CACHED_TEXT.clear();
+                        CACHED_GHOST_LAYOUT = None;
+                        CACHED_GHOST_TEXT.clear();
+                        CACHED_GHOST_PREDICTION_SOURCE.clear();
+                        CACHED_PLACEHOLDER_LAYOUT = None;
+                        CACHED_SEL_START = 0;
+                        CACHED_SEL_END = 0;
+                    }
+                }
             }
             let _w = (lp.0 & 0xFFFF) as i32;
             let _ = SetWindowPos(
@@ -310,6 +326,17 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 0,
                 SWP_NOZORDER | SWP_NOACTIVATE,
             );
+            let _ = SetWindowPos(
+                H_EDIT,
+                None,
+                -10000,
+                -10000,
+                0,
+                0,
+                SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+            CACHED_TEXT_LAYOUT = None;
+            CACHED_TEXT.clear();
             let _ = InvalidateRect(Some(hwnd), None, false);
             LRESULT(0)
         }
@@ -605,7 +632,7 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                         let _ = SetForegroundWindow(hwnd);
                         let _ = SetFocus(Some(H_EDIT));
                         ANIM_TYPE = AnimType::Entering;
-                        ANIM_START_TIME = Some(Instant::now());
+                        ANIM_START_TIME = None;
                         SetTimer(Some(hwnd), 3, 10, None);
                         if let Some(history) = &HISTORY {
                             if let Some(latest) = history.first() {
@@ -614,7 +641,11 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                                 }
                                 let latest_u16: Vec<u16> =
                                     latest.encode_utf16().chain(std::iter::once(0)).collect();
+
+                                // Suppress expensive prediction updates during restore
+                                IS_CYCLING = true;
                                 let _ = SetWindowTextW(H_EDIT, PCWSTR(latest_u16.as_ptr()));
+                                IS_CYCLING = false;
                                 let _ = SendMessageW(
                                     H_EDIT,
                                     EM_SETSEL,
@@ -673,6 +704,15 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                     height: h as u32,
                 });
             }
+
+            CACHED_TEXT_LAYOUT = None;
+            CACHED_TEXT.clear();
+            CACHED_GHOST_LAYOUT = None;
+            CACHED_GHOST_TEXT.clear();
+            CACHED_GHOST_PREDICTION_SOURCE.clear();
+            CACHED_PLACEHOLDER_LAYOUT = None;
+            CACHED_SEL_START = 0;
+            CACHED_SEL_END = 0;
             LRESULT(0)
         }
         _ => DefWindowProcW(hwnd, msg, wp, lp),
@@ -1223,47 +1263,97 @@ pub unsafe fn paint() {
             right: w - MARGIN - 30.0,
             bottom: INPUT_Y + INPUT_H - 8.0,
         };
+
+        // Get Selection ONCE (moved up)
+        let (mut start, mut end) = (0, 0);
+        SendMessageW(
+            H_EDIT,
+            EM_GETSEL,
+            Some(WPARAM(&mut start as *mut _ as usize)),
+            Some(LPARAM(&mut end as *mut _ as isize)),
+        );
+
         if buf.is_empty() {
-            let hint_u16: Vec<u16> = "Search or run a command...".encode_utf16().collect();
+            // Placeholder Cache Logic
             if let Some(dwrite) = &DWRITE_FACTORY {
-                if let Ok(layout) = dwrite.CreateTextLayout(
-                    &hint_u16,
-                    &f.input,
-                    text_rect.right - text_rect.left,
-                    text_rect.bottom - text_rect.top,
-                ) {
-                    let _ = layout.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+                if CACHED_PLACEHOLDER_LAYOUT.is_some() {
+                    let layout = CACHED_PLACEHOLDER_LAYOUT.as_ref().unwrap();
                     rt.DrawTextLayout(
                         D2D_POINT_2F {
                             X: text_rect.left,
                             Y: text_rect.top,
                         },
-                        &layout,
+                        layout,
                         &b.placeholder,
                         D2D1_DRAW_TEXT_OPTIONS_NONE,
                     );
+                } else {
+                    let hint_u16: Vec<u16> = "Search or run a command...".encode_utf16().collect();
+                    if let Ok(layout) = dwrite.CreateTextLayout(
+                        &hint_u16,
+                        &f.input,
+                        text_rect.right - text_rect.left,
+                        text_rect.bottom - text_rect.top,
+                    ) {
+                        let _ = layout.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+                        rt.DrawTextLayout(
+                            D2D_POINT_2F {
+                                X: text_rect.left,
+                                Y: text_rect.top,
+                            },
+                            &layout,
+                            &b.placeholder,
+                            D2D1_DRAW_TEXT_OPTIONS_NONE,
+                        );
+                        CACHED_PLACEHOLDER_LAYOUT = Some(layout);
+                    }
                 }
             }
         } else {
+            // Main Text Layout Logic
             if let Some(dwrite) = &DWRITE_FACTORY {
-                let text_u16: Vec<u16> = buf.encode_utf16().collect();
-                if let Ok(layout) = dwrite.CreateTextLayout(
-                    &text_u16,
-                    &f.input,
-                    text_rect.right - text_rect.left,
-                    text_rect.bottom - text_rect.top,
-                ) {
-                    let _ = layout.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-                    let lresult = SendMessageW(H_EDIT, EM_GETSEL, Some(WPARAM(0)), Some(LPARAM(0)));
-                    let (start, end) = (
-                        (lresult.0 & 0xFFFF) as u32,
-                        ((lresult.0 >> 16) & 0xFFFF) as u32,
-                    );
+                // Ensure Cache matches
+                if CACHED_TEXT != *buf || CACHED_TEXT_LAYOUT.is_none() {
+                    let text_u16: Vec<u16> = buf.encode_utf16().collect();
+                    if let Ok(new_layout) = dwrite.CreateTextLayout(
+                        &text_u16,
+                        &f.input,
+                        text_rect.right - text_rect.left,
+                        text_rect.bottom - text_rect.top,
+                    ) {
+                        let _ = new_layout.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+                        CACHED_TEXT = buf.clone();
+                        CACHED_TEXT_LAYOUT = Some(new_layout);
+                    }
+                }
+
+                if let Some(layout) = CACHED_TEXT_LAYOUT.as_ref() {
+                    // Draw Selection Background
+                    // Draw Selection Background
                     if start != end {
-                        let (mut x1, mut y1, mut m1, mut x2, mut y2, mut m2) =
-                            (0.0, 0.0, std::mem::zeroed(), 0.0, 0.0, std::mem::zeroed());
-                        let _ = layout.HitTestTextPosition(start, false, &mut x1, &mut y1, &mut m1);
-                        let _ = layout.HitTestTextPosition(end, false, &mut x2, &mut y2, &mut m2);
+                        // Check Selection Cache
+                        let (x1, x2) = if CACHED_SEL_START == start as u32
+                            && CACHED_SEL_END == end as u32
+                        {
+                            (CACHED_SEL_X1, CACHED_SEL_X2)
+                        } else {
+                            let (mut x1, mut y1, mut m1, mut x2, mut y2, mut m2) =
+                                (0.0, 0.0, std::mem::zeroed(), 0.0, 0.0, std::mem::zeroed());
+                            let _ = layout.HitTestTextPosition(
+                                start as u32,
+                                false,
+                                &mut x1,
+                                &mut y1,
+                                &mut m1,
+                            );
+                            let _ = layout
+                                .HitTestTextPosition(end as u32, false, &mut x2, &mut y2, &mut m2);
+                            CACHED_SEL_START = start as u32;
+                            CACHED_SEL_END = end as u32;
+                            CACHED_SEL_X1 = x1;
+                            CACHED_SEL_X2 = x2;
+                            (x1, x2)
+                        };
                         rt.FillRectangle(
                             &D2D_RECT_F {
                                 left: text_rect.left + x1,
@@ -1273,77 +1363,128 @@ pub unsafe fn paint() {
                             },
                             &b.selection,
                         );
+                    } else {
+                        // Check Selection Cache (Empty selection, cursor position)
+                        if CACHED_SEL_START != start as u32 || CACHED_SEL_END != end as u32 {
+                            let (mut x1, mut y1, mut m1) = (0.0, 0.0, std::mem::zeroed());
+                            let _ = layout.HitTestTextPosition(
+                                start as u32,
+                                false,
+                                &mut x1,
+                                &mut y1,
+                                &mut m1,
+                            );
+                            CACHED_SEL_START = start as u32;
+                            CACHED_SEL_END = end as u32;
+                            CACHED_SEL_X1 = x1;
+                            CACHED_SEL_X2 = x1; // Same point
+                        }
                     }
+
+                    // Draw Text
+                    // Draw Text
                     rt.DrawTextLayout(
                         D2D_POINT_2F {
                             X: text_rect.left,
                             Y: text_rect.top,
                         },
-                        &layout,
+                        layout,
                         &b.white,
                         D2D1_DRAW_TEXT_OPTIONS_NONE,
                     );
 
-                    // Draw Prediction Ghost Text
+                    // Ghost Text (Prediction) - Optimized Cache
                     if !PREDICTION.is_empty()
+                        && CACHED_GHOST_PREDICTION_SOURCE == PREDICTION
+                        && CACHED_GHOST_LAYOUT.is_some()
+                    {
+                        // FAST PATH: Prediction unchanged
+                        if PREDICTION.len() > buf.len() {
+                            if let Some(g_layout) = CACHED_GHOST_LAYOUT.as_ref() {
+                                // For ghost x pos, we need end of text position.
+                                // We can reuse cached sel end X if sel end == buf len
+                                let cursor_x = if CACHED_SEL_END as usize == buf.len() {
+                                    CACHED_SEL_X2
+                                } else {
+                                    let (mut x, mut y, mut m) = (0.0, 0.0, std::mem::zeroed());
+                                    let _ = layout.HitTestTextPosition(
+                                        buf.len() as u32,
+                                        false,
+                                        &mut x,
+                                        &mut y,
+                                        &mut m,
+                                    );
+                                    x
+                                };
+                                rt.DrawTextLayout(
+                                    D2D_POINT_2F {
+                                        X: text_rect.left + cursor_x,
+                                        Y: text_rect.top,
+                                    },
+                                    g_layout,
+                                    &b.gray,
+                                    D2D1_DRAW_TEXT_OPTIONS_CLIP,
+                                );
+                            }
+                        }
+                    } else if !PREDICTION.is_empty()
+                        && PREDICTION.len() > buf.len()
                         && PREDICTION.to_lowercase().starts_with(&buf.to_lowercase())
                     {
-                        let pred_chars: Vec<char> = PREDICTION.chars().collect();
-                        let buf_chars: Vec<char> = buf.chars().collect();
-                        if pred_chars.len() > buf_chars.len() {
-                            let pred_suffix =
-                                pred_chars[buf_chars.len()..].iter().collect::<String>();
-                            let suffix_u16: Vec<u16> = pred_suffix.encode_utf16().collect();
-                            let (mut x, mut y, mut m) = (0.0, 0.0, std::mem::zeroed());
-                            let _ = layout.HitTestTextPosition(
-                                buf.len() as u32,
-                                false,
-                                &mut x,
-                                &mut y,
-                                &mut m,
-                            );
+                        // COLD PATH: Recalculate Ghost Layout
+                        let pred_suffix = PREDICTION[buf.len()..].to_string();
+                        let suffix_u16: Vec<u16> = pred_suffix.encode_utf16().collect();
+                        if let Ok(g_layout) = dwrite.CreateTextLayout(
+                            &suffix_u16,
+                            &f.input,
+                            text_rect.right - text_rect.left,
+                            text_rect.bottom - text_rect.top,
+                        ) {
+                            let _ = g_layout.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+                            CACHED_GHOST_TEXT = pred_suffix;
+                            CACHED_GHOST_PREDICTION_SOURCE = PREDICTION.clone();
+                            CACHED_GHOST_LAYOUT = Some(g_layout);
 
-                            rt.DrawText(
-                                &suffix_u16,
-                                &f.input,
-                                &D2D_RECT_F {
-                                    left: text_rect.left + x,
-                                    top: text_rect.top,
-                                    right: text_rect.right,
-                                    bottom: text_rect.bottom,
-                                },
-                                &b.gray,
-                                D2D1_DRAW_TEXT_OPTIONS_CLIP,
-                                DWRITE_MEASURING_MODE_NATURAL,
-                            );
+                            if let Some(g_layout) = CACHED_GHOST_LAYOUT.as_ref() {
+                                let (mut x, mut y, mut m) = (0.0, 0.0, std::mem::zeroed());
+                                let _ = layout.HitTestTextPosition(
+                                    buf.len() as u32,
+                                    false,
+                                    &mut x,
+                                    &mut y,
+                                    &mut m,
+                                );
+                                rt.DrawTextLayout(
+                                    D2D_POINT_2F {
+                                        X: text_rect.left + x,
+                                        Y: text_rect.top,
+                                    },
+                                    g_layout,
+                                    &b.gray,
+                                    D2D1_DRAW_TEXT_OPTIONS_CLIP,
+                                );
+                            }
                         }
+                    } else {
+                        CACHED_GHOST_LAYOUT = None;
+                        CACHED_GHOST_PREDICTION_SOURCE.clear();
                     }
                 }
             }
         }
 
+        // UNCONDITIONAL CARET DRAW
         let blink_time = GetCaretBlinkTime();
         let blink_time = if blink_time == 0 { 500 } else { blink_time };
         if (GetTickCount() / blink_time) % 2 == 0 {
             let cursor_x = if buf.is_empty() {
                 text_rect.left
             } else {
-                if let Some(dwrite) = &DWRITE_FACTORY {
-                    let text_u16: Vec<u16> = buf.encode_utf16().collect();
-                    if let Ok(layout) = dwrite.CreateTextLayout(
-                        &text_u16,
-                        &f.input,
-                        text_rect.right - text_rect.left,
-                        text_rect.bottom - text_rect.top,
-                    ) {
-                        let _ = layout.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-                        let (mut start, mut end) = (0, 0);
-                        SendMessageW(
-                            H_EDIT,
-                            EM_GETSEL,
-                            Some(WPARAM(&mut start as *mut _ as usize)),
-                            Some(LPARAM(&mut end as *mut _ as isize)),
-                        );
+                if CACHED_SEL_START == start as u32 && CACHED_SEL_END == end as u32 {
+                    text_rect.left + CACHED_SEL_X2
+                } else {
+                    if let Some(layout) = CACHED_TEXT_LAYOUT.as_ref() {
+                        // Recalculate
                         let (mut x, mut y, mut m) = (0.0, 0.0, std::mem::zeroed());
                         let _ =
                             layout.HitTestTextPosition(end as u32, false, &mut x, &mut y, &mut m);
@@ -1351,10 +1492,9 @@ pub unsafe fn paint() {
                     } else {
                         text_rect.left
                     }
-                } else {
-                    text_rect.left
                 }
             };
+
             rt.DrawLine(
                 D2D_POINT_2F {
                     X: cursor_x,
@@ -1504,6 +1644,10 @@ unsafe fn update_animation_values(hwnd: HWND) {
     }
 }
 pub unsafe fn update_animations(hwnd: HWND) {
+    if ANIM_TYPE != AnimType::None && ANIM_START_TIME.is_none() {
+        ANIM_START_TIME = Some(Instant::now());
+    }
+
     if let Some(start) = ANIM_START_TIME {
         let elapsed = start.elapsed().as_millis();
         match ANIM_TYPE {
@@ -1531,6 +1675,7 @@ pub unsafe fn update_animations(hwnd: HWND) {
                         0,
                         SWP_NOSIZE | SWP_NOZORDER,
                     );
+                    ANIM_START_TIME = None;
                 }
             }
             AnimType::Exiting => {
@@ -1553,6 +1698,7 @@ pub unsafe fn update_animations(hwnd: HWND) {
                     } else {
                         let _ = ShowWindow(hwnd, SW_HIDE);
                     }
+                    ANIM_START_TIME = None;
                 }
             }
             _ => {}

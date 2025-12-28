@@ -1,6 +1,6 @@
 # ⚡ SwiftRun
 
-**Blazing Fast Windows 11 Run Written in Rust**
+**A Modern High Performance Blazing FastRust Based Fluent Design 'Run Dialog' for Windows 11.**
 
 ![SwiftRun](res/Swift_Run.png)
 
@@ -64,6 +64,8 @@ Hit me up on Discord: Hamidr.b#1461
 **If you want to see more parts of Windows 11 updated the way they were supposed to be 4 years ago, please support me with your donations!**
 
 BTC: bc1qqyvc7yl43cy027dqvyzaa5zdz83tj0v5y0k7nk
+
+
 ETH: 0xdfd3e7b9469872452d1f6c2919a5c59ad018a10a
 
 ---

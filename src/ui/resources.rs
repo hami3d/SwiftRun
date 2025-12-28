@@ -25,6 +25,20 @@ pub static mut H_TOOLTIP: HWND = HWND(std::ptr::null_mut());
 
 pub static INPUT_BUFFER: Mutex<String> = Mutex::new(String::new());
 
+pub static mut CACHED_TEXT_LAYOUT: Option<IDWriteTextLayout> = None;
+pub static mut CACHED_TEXT: String = String::new();
+
+pub static mut CACHED_GHOST_LAYOUT: Option<IDWriteTextLayout> = None;
+pub static mut CACHED_GHOST_TEXT: String = String::new(); // Keep for safety or remove if redundant, but PREDICTION_SOURCE is key.
+pub static mut CACHED_GHOST_PREDICTION_SOURCE: String = String::new();
+
+pub static mut CACHED_PLACEHOLDER_LAYOUT: Option<IDWriteTextLayout> = None;
+
+pub static mut CACHED_SEL_START: u32 = 0;
+pub static mut CACHED_SEL_END: u32 = 0;
+pub static mut CACHED_SEL_X1: f32 = 0.0;
+pub static mut CACHED_SEL_X2: f32 = 0.0;
+
 // Message constants
 pub const WM_APP_RUN_COMMAND: u32 = 1025;
 pub const WM_APP_CLOSE: u32 = 1026;
