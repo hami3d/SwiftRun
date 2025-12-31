@@ -179,6 +179,16 @@ pub unsafe fn start_exit_animation(hwnd: HWND, kill: bool) {
         if kill {
             PostQuitMessage(0);
         } else {
+            // Reset to START_Y before hiding so it's ready for next slide-in
+            let _ = SetWindowPos(
+                hwnd,
+                None,
+                FINAL_X,
+                START_Y,
+                0,
+                0,
+                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
             let _ = ShowWindow(hwnd, SW_HIDE);
         }
         return;
@@ -222,6 +232,19 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             LRESULT(0)
         }
         WM_APP_SHOW_UI => {
+            update_animation_values(hwnd);
+
+            // Move to START_Y before showing to ensure slide-in starts from bottom
+            let _ = SetWindowPos(
+                hwnd,
+                None,
+                FINAL_X,
+                START_Y,
+                0,
+                0,
+                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+
             // Restore if minimized
             if IsIconic(hwnd).as_bool() {
                 let _ = ShowWindow(hwnd, SW_RESTORE);
@@ -310,9 +333,12 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                         CACHED_GHOST_LAYOUT = None;
                         CACHED_GHOST_TEXT.clear();
                         CACHED_GHOST_PREDICTION_SOURCE.clear();
+                        CACHED_GHOST_INPUT_LEN = 0;
                         CACHED_PLACEHOLDER_LAYOUT = None;
                         CACHED_SEL_START = 0;
                         CACHED_SEL_END = 0;
+                        CACHED_SEL_X1 = 0.0;
+                        CACHED_SEL_X2 = 0.0;
                     }
                 }
             }
@@ -619,15 +645,17 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                         }
                         update_animation_values(hwnd);
 
+                        // Move to START_Y before showing to ensure slide-in starts from bottom
                         let _ = SetWindowPos(
                             hwnd,
                             Some(HWND_TOPMOST),
+                            FINAL_X,
+                            START_Y,
                             0,
                             0,
-                            0,
-                            0,
-                            SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+                            SWP_NOSIZE,
                         );
+
                         let _ = ShowWindow(hwnd, SW_SHOW);
                         let _ = SetForegroundWindow(hwnd);
                         let _ = SetFocus(Some(H_EDIT));
@@ -710,6 +738,7 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             CACHED_GHOST_LAYOUT = None;
             CACHED_GHOST_TEXT.clear();
             CACHED_GHOST_PREDICTION_SOURCE.clear();
+            CACHED_GHOST_INPUT_LEN = 0;
             CACHED_PLACEHOLDER_LAYOUT = None;
             CACHED_SEL_START = 0;
             CACHED_SEL_END = 0;
@@ -1396,6 +1425,7 @@ pub unsafe fn paint() {
                     // Ghost Text (Prediction) - Optimized Cache
                     if !PREDICTION.is_empty()
                         && CACHED_GHOST_PREDICTION_SOURCE == PREDICTION
+                        && CACHED_GHOST_INPUT_LEN == buf.len()
                         && CACHED_GHOST_LAYOUT.is_some()
                     {
                         // FAST PATH: Prediction unchanged
@@ -1432,7 +1462,11 @@ pub unsafe fn paint() {
                         && PREDICTION.to_lowercase().starts_with(&buf.to_lowercase())
                     {
                         // COLD PATH: Recalculate Ghost Layout
-                        let pred_suffix = PREDICTION[buf.len()..].to_string();
+                        let pred_suffix = if PREDICTION.is_char_boundary(buf.len()) {
+                            PREDICTION[buf.len()..].to_string()
+                        } else {
+                            String::new()
+                        };
                         let suffix_u16: Vec<u16> = pred_suffix.encode_utf16().collect();
                         if let Ok(g_layout) = dwrite.CreateTextLayout(
                             &suffix_u16,
@@ -1443,6 +1477,7 @@ pub unsafe fn paint() {
                             let _ = g_layout.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
                             CACHED_GHOST_TEXT = pred_suffix;
                             CACHED_GHOST_PREDICTION_SOURCE = PREDICTION.clone();
+                            CACHED_GHOST_INPUT_LEN = buf.len();
                             CACHED_GHOST_LAYOUT = Some(g_layout);
 
                             if let Some(g_layout) = CACHED_GHOST_LAYOUT.as_ref() {
@@ -1696,6 +1731,16 @@ pub unsafe fn update_animations(hwnd: HWND) {
                     if EXIT_KILL_PROCESS {
                         PostQuitMessage(0);
                     } else {
+                        // Ensure it's at START_Y for the next opening
+                        let _ = SetWindowPos(
+                            hwnd,
+                            None,
+                            FINAL_X,
+                            START_Y,
+                            0,
+                            0,
+                            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+                        );
                         let _ = ShowWindow(hwnd, SW_HIDE);
                     }
                     ANIM_START_TIME = None;

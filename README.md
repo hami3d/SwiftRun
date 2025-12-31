@@ -1,7 +1,5 @@
 # ⚡ SwiftRun
 
-**A Modern High Performance Blazing FastRust Based Fluent Design 'Run Dialog' for Windows 11.**
-
 ![SwiftRun](res/Swift_Run.png)
 
 This is a High Performance Rust Based Windows 11 Run Dialog Replacement with Modern UI and Hardware Accelerated Rendering with the Use of Win32 API. Written mostly with the help of Agentic AI and *"Vibe Coding"* in a couple of days.
@@ -35,6 +33,19 @@ I'm using Windows 11 25H2 and tested it here, so submit an issue if you have any
 
 ---
 
+## 🏷️ Quick Aliases
+
+SwiftRun includes built-in shortcuts for common tasks and folders:
+- **terminal** / **term**: Launch Windows Terminal.
+- **docs** / **documents**: Open your Documents folder.
+- **pics** / **pictures**: Open your Pictures folder.
+- **vids** / **videos**: Open your Videos folder.
+- **music**: Open your Music folder.
+- **downloads**: Open your Downloads folder.
+- **desktop**: Open your Desktop folder.
+
+---
+
 ## 🚀 Getting Started
 
 SwiftRun is portable and easy to set up.
@@ -59,7 +70,7 @@ It cleans up after itself perfectly, restoring the default Windows behavior.
 
 I built this because the old Run dialog was driving me crazy! If you're a Rustacean or a Windows UI enthusiast, I'd love your help! Feel free to open an issue or submit a PR.
 
-Hit me up on Discord: Hamidr.b#1461
+🚀 Hit me up on Discord: Hamidr.b#1461
 
 **If you want to see more parts of Windows 11 updated the way they were supposed to be 4 years ago, please support me with your donations!**
 

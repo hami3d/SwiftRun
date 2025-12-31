@@ -29,8 +29,9 @@ pub static mut CACHED_TEXT_LAYOUT: Option<IDWriteTextLayout> = None;
 pub static mut CACHED_TEXT: String = String::new();
 
 pub static mut CACHED_GHOST_LAYOUT: Option<IDWriteTextLayout> = None;
-pub static mut CACHED_GHOST_TEXT: String = String::new(); // Keep for safety or remove if redundant, but PREDICTION_SOURCE is key.
+pub static mut CACHED_GHOST_TEXT: String = String::new();
 pub static mut CACHED_GHOST_PREDICTION_SOURCE: String = String::new();
+pub static mut CACHED_GHOST_INPUT_LEN: usize = 0;
 
 pub static mut CACHED_PLACEHOLDER_LAYOUT: Option<IDWriteTextLayout> = None;
 

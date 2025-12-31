@@ -339,8 +339,10 @@ pub unsafe extern "system" fn dropdown_wndproc(
                                 ..Default::default()
                             };
 
+                            let mut pushed_layer = false;
                             if let Ok(layer) = target.CreateLayer(None) {
                                 target.PushLayer(&layer_params, &layer);
+                                pushed_layer = true;
                             }
 
                             rt.SetTransform(&Matrix3x2::translation(0.0, y_off));
@@ -438,12 +440,14 @@ pub unsafe extern "system" fn dropdown_wndproc(
                                 }
                             }
 
-                            target.PopLayer();
+                            if pushed_layer {
+                                target.PopLayer();
+                            }
                             rt.SetTransform(&Matrix3x2::identity());
 
-                            let result = target.EndDraw(None, None);
-                            if let Err(e) = result {
-                                if e.code() == HRESULT(0x8899000Cu32 as i32) {
+                            if let Err(e) = target.EndDraw(None, None) {
+                                if e.code().0 == 0x8899000Cu32 as i32 {
+                                    // D2DERR_RECREATE_TARGET
                                     DROPDOWN_RENDER_TARGET = None;
                                     DROPDOWN_BRUSHES = None;
                                     let _ = InvalidateRect(Some(hwnd), None, false);

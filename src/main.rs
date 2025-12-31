@@ -9,8 +9,8 @@ use windows::{
     Win32::Foundation::*, Win32::Graphics::Direct2D::*, Win32::Graphics::DirectWrite::*,
     Win32::Graphics::Dwm::*, Win32::Graphics::Gdi::*, Win32::Media::*, Win32::System::Com::*,
     Win32::System::LibraryLoader::GetModuleHandleW, Win32::System::RemoteDesktop::*,
-    Win32::UI::Controls::*, Win32::UI::HiDpi::SetProcessDpiAwareness,
-    Win32::UI::Input::KeyboardAndMouse::*, Win32::UI::WindowsAndMessaging::*, core::*,
+    Win32::UI::HiDpi::SetProcessDpiAwareness, Win32::UI::Input::KeyboardAndMouse::*,
+    Win32::UI::WindowsAndMessaging::*, core::*,
 };
 
 mod animations;
@@ -351,14 +351,17 @@ fn main() -> Result<()> {
                                     WPARAM(is_elevated),
                                     LPARAM(0),
                                 );
+                                continue; // Prevent beep
                             }
                             v if v == VK_UP.0 as i32 => {
                                 cycle_history(-1, H_EDIT);
                                 let _ = InvalidateRect(Some(hwnd), None, false);
+                                continue;
                             }
                             v if v == VK_DOWN.0 as i32 => {
                                 cycle_history(1, H_EDIT);
                                 let _ = InvalidateRect(Some(hwnd), None, false);
+                                continue;
                             }
                             v if v == VK_TAB.0 as i32
                                 || (v == VK_RIGHT.0 as i32 && !PREDICTION.is_empty()) =>
@@ -373,12 +376,11 @@ fn main() -> Result<()> {
                                         pred.encode_utf16().chain(std::iter::once(0)).collect();
                                     IS_CYCLING = true;
                                     let _ = SetWindowTextW(H_EDIT, PCWSTR(u16_vec.as_ptr()));
-                                    let utf16_len = pred.encode_utf16().count();
                                     SendMessageW(
                                         H_EDIT,
-                                        EM_SETSEL,
-                                        Some(WPARAM(utf16_len)),
-                                        Some(LPARAM(utf16_len as isize)),
+                                        windows::Win32::UI::Controls::EM_SETSEL,
+                                        Some(WPARAM(0)),
+                                        Some(LPARAM(-1)),
                                     );
                                     IS_CYCLING = false;
                                     PREDICTION = String::new();
@@ -389,6 +391,7 @@ fn main() -> Result<()> {
                                     }
                                     let _ = InvalidateRect(Some(hwnd), None, false);
                                 }
+                                continue; // Prevent beep/focus shift
                             }
                             v if v == VK_BACK.0 as i32
                                 && GetKeyState(VK_CONTROL.0 as i32) < 0
@@ -408,6 +411,19 @@ fn main() -> Result<()> {
                                     "The command history has been successfully removed.",
                                 );
                                 let _ = InvalidateRect(Some(hwnd), None, false);
+                                continue;
+                            }
+                            _ => {}
+                        }
+                    } else if msg.message == WM_KEYUP {
+                        // Also consume KEYUP for these keys to be safe
+                        match vk {
+                            v if v == VK_RETURN.0 as i32
+                                || v == VK_UP.0 as i32
+                                || v == VK_DOWN.0 as i32
+                                || v == VK_TAB.0 as i32 =>
+                            {
+                                continue;
                             }
                             _ => {}
                         }

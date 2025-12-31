@@ -102,20 +102,26 @@ pub unsafe fn run_command(elevated: bool) {
 unsafe fn expand_aliases_and_env(input: &str) -> String {
     let mut result = input.to_string();
 
-    // 1. Handle Quick Aliases
-    let lower = result.to_lowercase();
-    let alias_path = match lower.as_str() {
+    // 1. Handle Quick Aliases (Command-only)
+    let parts: Vec<&str> = result.splitn(2, ' ').collect();
+    let cmd = parts[0].to_lowercase();
+    let alias_path = match cmd.as_str() {
         "docs" | "documents" => get_known_folder_path(&FOLDERID_Documents),
         "pictures" | "pics" => get_known_folder_path(&FOLDERID_Pictures),
         "videos" | "vids" => get_known_folder_path(&FOLDERID_Videos),
         "music" => get_known_folder_path(&FOLDERID_Music),
         "downloads" => get_known_folder_path(&FOLDERID_Downloads),
         "desktop" => get_known_folder_path(&FOLDERID_Desktop),
+        "terminal" | "term" => Some("wt".to_string()),
         _ => None,
     };
 
     if let Some(path) = alias_path {
-        result = path;
+        if parts.len() > 1 {
+            result = format!("{} {}", path, parts[1]);
+        } else {
+            result = path;
+        }
     }
 
     // 2. Expand Environment Variables (e.g. %appdata%)
